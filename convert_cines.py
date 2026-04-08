@@ -208,9 +208,11 @@ def main():
                         help="Save extracted check frames alongside the converted MP4 "
                              "(ignored if --check-dir is set)")
     parser.add_argument("--remove-cine", action="store_true",
-                        help="Remove original CINE file after a passing --check. "
-                             "The first CINE encountered in each directory requires "
-                             "interactive confirmation (type 'remove') before deletion.")
+                        help="After --check, write a shell script listing all CINE files that "
+                             "passed, so you can review and run it to delete them.")
+    parser.add_argument("--remove-script", type=Path, default=None, metavar="PATH",
+                        help="Path for the generated removal script (default: remove_cines.sh "
+                             "next to the source directory). A .bat file is also written for Windows.")
 
     args = parser.parse_args()
 
@@ -240,20 +242,11 @@ def main():
     if test_mode:
         print(f"[TEST MODE] Processing {len(files)} file(s)")
 
-    confirmed_remove = False
-    if args.remove_cine:
-        print("--remove-cine: CINE files that pass --check will be deleted "
-              "(first file per directory is always kept).")
-        print("Type 'remove' to confirm, or press Enter to cancel: ", end="", flush=True)
-        if input().strip() == "remove":
-            confirmed_remove = True
-        else:
-            print("Removal cancelled; files will not be deleted.")
-
     succeeded, skipped, failed = 0, 0, 0
-    psnr_failed, check_failed, cine_removed = 0, 0, 0
+    psnr_failed, check_failed = 0, 0
     run_psnr = test_mode or args.test_psnr
-    seen_src_dirs = set()
+    cines_to_remove: list[Path] = []
+    seen_src_dirs: set[Path] = set()
 
     for i, src in enumerate(files, 1):
         is_first_in_dir = src.parent not in seen_src_dirs
@@ -279,10 +272,8 @@ def main():
                 print_check_result(r)
                 if not r.passed:
                     check_failed += 1
-                elif confirmed_remove and not is_first_in_dir:
-                    src.unlink()
-                    print(f"  removed {src.name}")
-                    cine_removed += 1
+                elif args.remove_cine and not is_first_in_dir:
+                    cines_to_remove.append(src)
             continue
 
         cmd = build_cmd(src, dst, args, max_intensity, contrast, gamma)
@@ -311,10 +302,8 @@ def main():
                 print_check_result(r)
                 if not r.passed:
                     check_failed += 1
-                elif confirmed_remove and not is_first_in_dir:
-                    src.unlink()
-                    print(f"  removed {src.name}")
-                    cine_removed += 1
+                elif args.remove_cine and not is_first_in_dir:
+                    cines_to_remove.append(src)
 
     if not args.dry_run:
         summary = f"\nDone: {succeeded} succeeded, {skipped} skipped, {failed} failed."
@@ -322,9 +311,33 @@ def main():
             summary += f"  PSNR: {psnr_failed} failed."
         if args.check:
             summary += f"  Check: {check_failed} failed."
-        if args.remove_cine:
-            summary += f"  CINEs removed: {cine_removed}."
+        if args.remove_cine and cines_to_remove:
+            summary += f"  CINEs queued for removal: {len(cines_to_remove)}."
         print(summary)
+
+    if args.remove_cine and cines_to_remove:
+        script_base = args.remove_script or (args.source_dir.parent / "remove_cines")
+        sh_path = script_base.with_suffix(".sh")
+        bat_path = script_base.with_suffix(".bat")
+
+        with sh_path.open("w") as f:
+            f.write("#!/bin/sh\n")
+            f.write("# Auto-generated: CINE files that passed --check\n")
+            f.write("# Review this list, then run: bash {}\n\n".format(sh_path.name))
+            for p in cines_to_remove:
+                f.write(f"rm {p}\n")
+        sh_path.chmod(sh_path.stat().st_mode | 0o111)
+
+        with bat_path.open("w") as f:
+            f.write("@echo off\n")
+            f.write("rem Auto-generated: CINE files that passed --check\n")
+            f.write("rem Review this list, then run: {}\n\n".format(bat_path.name))
+            for p in cines_to_remove:
+                f.write(f"del \"{p}\"\n")
+
+        print(f"\nRemoval scripts written:")
+        print(f"  Mac/Linux: {sh_path}")
+        print(f"  Windows:   {bat_path}")
 
 
 if __name__ == "__main__":
