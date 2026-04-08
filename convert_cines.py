@@ -1,10 +1,63 @@
 #!/usr/bin/env python3
 import argparse
+import math
 import os
 import subprocess
 import sys
 from fnmatch import fnmatch
 from pathlib import Path
+
+import logging
+
+logging.basicConfig(level=logging.WARNING,
+                    format='%(name)s - %(levelname)s - %(message)s')
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+from check_conversion import (
+    DEFAULT_PSNR_FRAMES,
+    DEFAULT_PSNR_THRESHOLD,
+    check_file,
+    verify_psnr,
+)
+
+
+def print_psnr_result(result):
+    if result.error:
+        print(f"  psnr: ERROR  {result.error}")
+        return
+    psnrs = [f.psnr for f in result.frames]
+    avg = sum(psnrs) / len(psnrs)
+    mn = min(psnrs)
+    n = len(psnrs)
+    avg_s = "inf" if math.isinf(avg) else f"{avg:.1f}"
+    mn_s = "inf" if math.isinf(mn) else f"{mn:.1f}"
+    if result.passed:
+        print(f"  psnr: PASS  (avg {avg_s} dB, min {mn_s} dB, {n}/{n} frames)")
+    else:
+        n_pass = sum(1 for f in result.frames if f.passed)
+        print(f"  psnr: FAIL  (avg {avg_s} dB, min {mn_s} dB, "
+              f"{n_pass}/{n} frames passed, threshold {result.threshold:.1f} dB)")
+
+
+def print_check_result(result):
+    if result.error:
+        print(f"  check: ERROR  {result.error}")
+        return
+    psnrs = [f.psnr for f in result.frames]
+    avg = sum(psnrs) / len(psnrs)
+    mn = min(psnrs)
+    n = len(psnrs)
+    avg_s = "inf" if math.isinf(avg) else f"{avg:.1f}"
+    mn_s = "inf" if math.isinf(mn) else f"{mn:.1f}"
+    if result.passed:
+        print(f"  check: PASS  (avg {avg_s} dB, min {mn_s} dB, {n}/{n} frames)")
+    else:
+        n_pass = sum(1 for f in result.frames if f.passed)
+        print(f"  check: FAIL  (avg {avg_s} dB, min {mn_s} dB, "
+              f"{n_pass}/{n} frames passed, threshold {result.threshold:.1f} dB)")
+
 
 
 def build_vf(max_intensity, contrast, gamma):
@@ -22,11 +75,11 @@ def build_vf(max_intensity, contrast, gamma):
     return ",".join(parts) if parts else None
 
 
-def output_path(src, source_root, output_dir):
+def output_path(src, source_root, output_dir, suffix=""):
     if output_dir is None:
-        return src.with_suffix(".mp4")
+        return src.parent / (src.stem + suffix + ".mp4")
     rel = src.relative_to(source_root)
-    return output_dir / rel.parent / (src.stem + ".mp4")
+    return output_dir / rel.parent / (src.stem + suffix + ".mp4")
 
 
 def find_files(source_dir, ext):
@@ -106,6 +159,8 @@ def main():
                              "If omitted, MP4s are written next to source files.")
     parser.add_argument("--overwrite", action="store_true", default=False,
                         help="Overwrite existing output files")
+    parser.add_argument("--suffix", default="",
+                        help="Suffix to add to output filenames before extension (default: '')")
     parser.add_argument("--crf", type=int, default=28, help="H.265 CRF value (default: 28)")
     parser.add_argument("--preset", default="slow", help="x265 preset (default: slow)")
     parser.add_argument("--fps", type=float, default=None, help="Output frame rate")
@@ -132,6 +187,30 @@ def main():
                         help="Print ffmpeg commands without running them")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Print detailed processing info")
+    parser.add_argument("--test-psnr", action="store_true",
+                        help="Run inline PSNR check after each conversion "
+                             "(also auto-enabled in any test mode)")
+    parser.add_argument("--psnr-frames", type=int, default=DEFAULT_PSNR_FRAMES, metavar="N",
+                        help=f"Frames to sample for inline PSNR check (default: {DEFAULT_PSNR_FRAMES})")
+    parser.add_argument("--psnr-threshold", type=float, default=DEFAULT_PSNR_THRESHOLD, metavar="T",
+                        help=f"Minimum acceptable PSNR in dB for inline check (default: {DEFAULT_PSNR_THRESHOLD})")
+    parser.add_argument("--check", action="store_true",
+                        help="Run thorough R-channel PSNR check by extracting grayscale frames "
+                             "from source and output. Runs after conversion and for skipped files.")
+    parser.add_argument("--check-frames", type=int, default=DEFAULT_PSNR_FRAMES, metavar="N",
+                        help=f"Frames to sample for --check (default: {DEFAULT_PSNR_FRAMES})")
+    parser.add_argument("--check-threshold", type=float, default=DEFAULT_PSNR_THRESHOLD, metavar="T",
+                        help=f"Minimum acceptable PSNR in dB for --check (default: {DEFAULT_PSNR_THRESHOLD})")
+    parser.add_argument("--check-dir", type=Path, default=None, metavar="DIR",
+                        help="Save extracted grayscale PNGs here for visual inspection "
+                             "(default: temp dir, cleaned up after each file)")
+    parser.add_argument("--keep-frames", action="store_true",
+                        help="Save extracted check frames alongside the converted MP4 "
+                             "(ignored if --check-dir is set)")
+    parser.add_argument("--remove-cine", action="store_true",
+                        help="Remove original CINE file after a passing --check. "
+                             "The first CINE encountered in each directory requires "
+                             "interactive confirmation (type 'remove') before deletion.")
 
     args = parser.parse_args()
 
@@ -153,7 +232,6 @@ def main():
             files = files[::step][: args.test_count]
         elif args.test_frames is not None:
             test_mode = True
-            files = files[:1]
 
     if not files:
         print("No files found.")
@@ -162,20 +240,49 @@ def main():
     if test_mode:
         print(f"[TEST MODE] Processing {len(files)} file(s)")
 
+    confirmed_remove = False
+    if args.remove_cine:
+        print("--remove-cine: CINE files that pass --check will be deleted "
+              "(first file per directory is always kept).")
+        print("Type 'remove' to confirm, or press Enter to cancel: ", end="", flush=True)
+        if input().strip() == "remove":
+            confirmed_remove = True
+        else:
+            print("Removal cancelled; files will not be deleted.")
+
     succeeded, skipped, failed = 0, 0, 0
+    psnr_failed, check_failed, cine_removed = 0, 0, 0
+    run_psnr = test_mode or args.test_psnr
+    seen_src_dirs = set()
 
     for i, src in enumerate(files, 1):
-        dst = output_path(src, args.source_dir, args.output_dir)
+        is_first_in_dir = src.parent not in seen_src_dirs
+        seen_src_dirs.add(src.parent)
+        dst = output_path(src, args.source_dir, args.output_dir, args.suffix)
         rel = src.relative_to(args.source_dir) if src.is_relative_to(args.source_dir) else Path(src.name)
         max_intensity, contrast, gamma = resolve_enhancement(rel, rules, args)
+        vf = build_vf(max_intensity, contrast, gamma)
 
         print(f"[{i}/{len(files)}] {src} → {dst}")
         if rules and args.verbose:
             print(f"  enhancement: max_intensity={max_intensity} contrast={contrast} gamma={gamma}")
 
+        check_dir = args.check_dir or (dst.parent if args.keep_frames else None)
+
         if dst.exists() and not args.overwrite:
             print("  skipping (output exists)")
             skipped += 1
+            if args.check and not args.test_frames:
+                r = check_file(src, dst, vf, n_frames=args.check_frames,
+                               threshold=args.check_threshold,
+                               check_dir=check_dir, verbose=args.verbose)
+                print_check_result(r)
+                if not r.passed:
+                    check_failed += 1
+                elif confirmed_remove and not is_first_in_dir:
+                    src.unlink()
+                    print(f"  removed {src.name}")
+                    cine_removed += 1
             continue
 
         cmd = build_cmd(src, dst, args, max_intensity, contrast, gamma)
@@ -191,9 +298,33 @@ def main():
             failed += 1
         else:
             succeeded += 1
+            if run_psnr:
+                r = verify_psnr(src, dst, vf, n_frames=args.psnr_frames,
+                                threshold=args.psnr_threshold, verbose=args.verbose)
+                print_psnr_result(r)
+                if not r.passed:
+                    psnr_failed += 1
+            if args.check and not args.test_frames:
+                r = check_file(src, dst, vf, n_frames=args.check_frames,
+                               threshold=args.check_threshold,
+                               check_dir=check_dir, verbose=args.verbose)
+                print_check_result(r)
+                if not r.passed:
+                    check_failed += 1
+                elif confirmed_remove and not is_first_in_dir:
+                    src.unlink()
+                    print(f"  removed {src.name}")
+                    cine_removed += 1
 
     if not args.dry_run:
-        print(f"\nDone: {succeeded} succeeded, {skipped} skipped, {failed} failed.")
+        summary = f"\nDone: {succeeded} succeeded, {skipped} skipped, {failed} failed."
+        if run_psnr:
+            summary += f"  PSNR: {psnr_failed} failed."
+        if args.check:
+            summary += f"  Check: {check_failed} failed."
+        if args.remove_cine:
+            summary += f"  CINEs removed: {cine_removed}."
+        print(summary)
 
 
 if __name__ == "__main__":
