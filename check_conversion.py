@@ -9,7 +9,7 @@ from pathlib import Path
 import logging
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 DEFAULT_PSNR_FRAMES = 5
 DEFAULT_PSNR_THRESHOLD = 30.0
@@ -50,9 +50,9 @@ def _get_duration(path: Path) -> float:
 
 
 def _timestamps(duration: float, n_frames: int) -> list[float]:
-    # skip the first timestamp (0s) since it can be affected by keyframe seeking and may 
+    # skip the first few timestamps since they can be affected by keyframe seeking and may 
     # not be representative of overall quality; sample evenly across the rest of the duration
-    return [(i + 0.5) * duration / (n_frames + 1) for i in range(n_frames + 1)][1:]
+    return [(i + 0.5) * duration / (n_frames + 3) for i in range(n_frames + 3)][3:]
 
 
 def _parse_psnr_y(stderr: str) -> float:
