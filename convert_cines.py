@@ -60,7 +60,6 @@ def print_check_result(result):
               f"{n_pass}/{n} frames passed, threshold {result.threshold:.1f} dB)")
 
 
-
 def build_vf(max_intensity, contrast, gamma):
     parts = []
     if max_intensity != 1.0:
@@ -153,7 +152,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="Recursively convert video files to H.265 MP4 using ffmpeg."
     )
-    parser.add_argument("source_dir", type=Path, help="Root directory to search")
+    parser.add_argument("source_dir", type=Path, nargs="?", default=None,
+                        help="Root directory to search (may be omitted with --continue)")
     parser.add_argument("--ext", default=".cine", help="File extension to find (default: .cine)")
     parser.add_argument("--output-dir", type=Path, default=None,
                         help="Output root directory (mirrors source structure). "
@@ -215,16 +215,113 @@ def main():
                         help="Path for the generated removal script (default: remove_cines.sh "
                              "next to the source directory). A .bat file is also written for Windows.")
     parser.add_argument("--progress-file", type=Path, default=None, metavar="PATH",
-                        help="CSV file for tracking progress and enabling resume. "
-                             "Written atomically after each step so a crash loses no status. "
-                             "On resume, completed files are skipped; files whose conversion "
-                             "options changed are automatically re-queued.")
+                        help="Path for the progress CSV (default: conversion_progress.csv inside "
+                             "source_dir). Created automatically; tracks status of every file so "
+                             "a run can be resumed after interruption.")
+    parser.add_argument("--no-progress", action="store_true",
+                        help="Disable progress tracking entirely (no CSV file).")
+    parser.add_argument("--continue", dest="continue_run", action="store_true",
+                        help="Resume a previous run using all parameters stored in the progress "
+                             "file. source_dir may be omitted; it is read from the progress file. "
+                             "Run-mode flags (--check, --verbose, --remove-cine, etc.) still come "
+                             "from the current command line.")
+    parser.add_argument("--restart", action="store_true",
+                        help="Clear the progress file and start fresh. Re-converts all files "
+                             "regardless of prior status.")
 
     args = parser.parse_args()
+
+    # -------------------------------------------------------------------------
+    # Progress file setup: resolve path, handle --continue / --restart
+    # -------------------------------------------------------------------------
+    progress_enabled = not args.no_progress and not args.dry_run
+    log: ProgressLog | None = None
+
+    if args.continue_run:
+        # Determine the progress file path before we know source_dir
+        if args.progress_file is not None:
+            progress_path = args.progress_file
+        elif args.source_dir is not None:
+            progress_path = args.source_dir / "conversion_progress.csv"
+        else:
+            parser.error("--continue requires either source_dir or --progress-file PATH")
+
+        if not progress_path.exists():
+            parser.error(f"--continue: progress file not found: {progress_path}")
+
+        if progress_enabled:
+            log = ProgressLog(progress_path)
+            log.load()
+            if not log.params.get('source_dir'):
+                parser.error(
+                    f"--continue: progress file has no stored parameters (was it created "
+                    f"with --no-progress?): {progress_path}"
+                )
+
+            stored = log.args_from_params()
+
+            # If source_dir was given on the command line, verify it matches
+            if args.source_dir is not None and stored['source_dir'] is not None:
+                if args.source_dir.resolve() != stored['source_dir'].resolve():
+                    parser.error(
+                        f"--continue: source_dir on command line ({args.source_dir}) does not "
+                        f"match progress file ({stored['source_dir']})"
+                    )
+
+            # Apply all stored conversion parameters to args
+            args.__dict__.update(stored)
+            started = log.params.get('started', 'unknown')
+            print(f"Resuming from {progress_path}  (started {started})")
+        else:
+            # --continue with --no-progress: we still need source_dir
+            if args.source_dir is None:
+                parser.error("--continue with --no-progress requires source_dir")
+
+    # source_dir must be known by now
+    if args.source_dir is None:
+        parser.error("source_dir is required (or use --continue to resume a previous run)")
 
     if not args.source_dir.is_dir():
         parser.error(f"source_dir is not a directory: {args.source_dir}")
 
+    # Default progress file path
+    if args.progress_file is None:
+        args.progress_file = args.source_dir / "conversion_progress.csv"
+
+    # --restart: delete the progress file so we start fresh
+    if args.restart:
+        if args.progress_file.exists():
+            args.progress_file.unlink()
+            print(f"Cleared progress file: {args.progress_file}")
+        log = None   # will be re-created below as empty
+
+    # Load (or create) the log for a normal / post-restart run
+    if progress_enabled and log is None:
+        log = ProgressLog(args.progress_file)
+        log.load()
+
+        # If a progress file exists with different source/output folders, stop
+        # and explain — the user probably needs --restart or a different path.
+        if log.params.get('source_dir') and not log.check_folder_match(
+            args.source_dir, args.output_dir
+        ):
+            stored_src = log.params['source_dir']
+            stored_out = log.params.get('output_dir', '') or '(same as source)'
+            parser.error(
+                f"Progress file {args.progress_file} was created for a different directory:\n"
+                f"  stored source_dir : {stored_src}\n"
+                f"  stored output_dir : {stored_out}\n"
+                f"Use --restart to clear and start fresh, or --progress-file to specify a "
+                f"different progress file."
+            )
+
+    # Record current parameters in the log (updates last_run; preserves started)
+    if log is not None:
+        log.set_params(args)
+
+    # -------------------------------------------------------------------------
+    # File discovery
+    # -------------------------------------------------------------------------
     rules = load_rules(args)
 
     test_mode = False
@@ -248,6 +345,9 @@ def main():
     if test_mode:
         print(f"[TEST MODE] Processing {len(files)} file(s)")
 
+    # -------------------------------------------------------------------------
+    # Pre-loop: register all files in the progress log
+    # -------------------------------------------------------------------------
     succeeded, skipped, failed = 0, 0, 0
     psnr_failed, check_failed = 0, 0
     # Inline PSNR is suppressed when --check is active (unless --test-psnr forces it),
@@ -256,12 +356,8 @@ def main():
     cines_to_remove: list[Path] = []
     seen_src_dirs: set[Path] = set()
 
-    # --- Progress log: register all files before the main loop ---
-    log: ProgressLog | None = None
     force_overwrite_map: dict[Path, bool] = {}
-    if args.progress_file and not args.dry_run:
-        log = ProgressLog(args.progress_file)
-        log.load()
+    if log is not None:
         for src in files:
             dst_pre = output_path(src, args.source_dir, args.output_dir, args.suffix)
             rel_pre = (src.relative_to(args.source_dir)
@@ -276,6 +372,9 @@ def main():
             force_overwrite_map[src] = force_ow
         log.write_initial()
 
+    # -------------------------------------------------------------------------
+    # Main loop
+    # -------------------------------------------------------------------------
     for i, src in enumerate(files, 1):
         is_first_in_dir = src.parent not in seen_src_dirs
         seen_src_dirs.add(src.parent)
@@ -294,7 +393,7 @@ def main():
         status = record.status if record else 'queued'
         force_ow = force_overwrite_map.get(src, False)
 
-        # Skip files that are fully done (both statuses mean no further work remains)
+        # Skip files that are fully done
         if status in TERMINAL_STATUSES:
             print(f"  skipping ({status})")
             if args.remove_cine and status == 'check_passed' and not is_first_in_dir:
@@ -321,13 +420,27 @@ def main():
                 print(" ", " ".join(cmd))
                 continue
             dst.parent.mkdir(parents=True, exist_ok=True)
-            result = subprocess.run(cmd)
-            if result.returncode != 0:
-                print(f"  ERROR: ffmpeg exited with code {result.returncode}", file=sys.stderr)
+            interrupted = False
+            try:
+                result = subprocess.run(cmd)
+                returncode = result.returncode
+            except KeyboardInterrupt:
+                interrupted = True
+                returncode = -1
+            if returncode != 0:
+                # Remove the partial output so a resume re-encodes from scratch
+                if dst.exists():
+                    dst.unlink()
+                    print(f"  removed partial output: {dst.name}", file=sys.stderr)
+                if interrupted:
+                    if log:
+                        log.update(src, 'conversion_failed', error="interrupted")
+                    raise KeyboardInterrupt
+                print(f"  ERROR: ffmpeg exited with code {returncode}", file=sys.stderr)
                 failed += 1
                 if log:
                     log.update(src, 'conversion_failed',
-                               error=f"ffmpeg exit code {result.returncode}")
+                               error=f"ffmpeg exit code {returncode}")
             else:
                 succeeded += 1
                 conversion_ok = True

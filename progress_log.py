@@ -6,6 +6,10 @@ can be resumed after interruption. The file is updated atomically (write to
 .tmp then os.replace) after each status transition, so a crash never leaves
 a partially-written file.
 
+The CSV is preceded by comment lines (starting with #) that record all
+conversion parameters so a run can be resumed with --continue without
+re-specifying them.
+
 Status progression:
     queued
       → converted          (ffmpeg succeeded)
@@ -18,6 +22,7 @@ Status progression:
 from __future__ import annotations
 
 import csv
+import io
 import math
 import os
 from dataclasses import dataclass
@@ -29,6 +34,17 @@ FIELDNAMES = [
     'crf', 'preset', 'fps', 'vf',
     'psnr_avg', 'psnr_min', 'check_avg', 'check_min',
     'updated', 'error',
+]
+
+# Parameters stored in the comment header for --continue resume.
+# 'rule' and 'config' are handled separately (rule is multi-valued).
+PARAM_KEYS = [
+    'source_dir', 'output_dir', 'ext', 'suffix',
+    'crf', 'preset', 'fps',
+    'max_intensity', 'contrast', 'gamma',
+    'psnr_frames', 'psnr_threshold',
+    'check_frames', 'check_threshold',
+    'config',
 ]
 
 # Statuses where all work is done — skip on resume
@@ -74,17 +90,121 @@ class ProgressLog:
     def __init__(self, path: Path):
         self.path = path
         self._records: dict[str, FileRecord] = {}
+        self.params: dict = {}   # global params parsed from / written to the comment header
 
     def load(self) -> None:
-        """Load existing progress from CSV (no-op if the file does not exist)."""
+        """Load existing progress from CSV (no-op if the file does not exist).
+
+        Populates self.params from comment lines and self._records from CSV rows.
+        """
         if not self.path.exists():
             return
-        with self.path.open(newline='', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                kwargs = {k: row.get(k, '') for k in FIELDNAMES}
-                rec = FileRecord(**kwargs)
-                self._records[rec.source] = rec
+
+        comment_lines = []
+        data_lines = []
+        for line in self.path.read_text(encoding='utf-8').splitlines(keepends=True):
+            if line.startswith('#'):
+                comment_lines.append(line)
+            else:
+                data_lines.append(line)
+
+        # Parse params from comment header
+        rules: list[str] = []
+        for line in comment_lines:
+            body = line[1:].strip()          # strip leading '#'
+            key, _, value = body.partition(':')
+            key = key.strip()
+            value = value.strip()
+            if not key:
+                continue
+            if key == 'rule':
+                rules.append(value)
+            elif key in PARAM_KEYS or key in ('started', 'last_run'):
+                self.params[key] = value
+        if rules:
+            self.params['rules'] = rules
+
+        # Parse CSV rows (skip blank lines that may follow comments)
+        reader = csv.DictReader(io.StringIO(''.join(data_lines)))
+        for row in reader:
+            kwargs = {k: row.get(k, '') for k in FIELDNAMES}
+            rec = FileRecord(**kwargs)
+            self._records[rec.source] = rec
+
+    def set_params(self, args) -> None:
+        """Record all conversion parameters from args into self.params.
+
+        Preserves the existing 'started' timestamp if already set.
+        """
+        started = self.params.get('started') or _now()
+        self.params.update({
+            'source_dir': str(args.source_dir),
+            'output_dir': str(args.output_dir) if args.output_dir else '',
+            'ext': args.ext,
+            'suffix': args.suffix,
+            'crf': str(args.crf),
+            'preset': args.preset,
+            'fps': str(args.fps) if args.fps is not None else '',
+            'max_intensity': str(args.max_intensity),
+            'contrast': str(args.contrast),
+            'gamma': str(args.gamma),
+            'psnr_frames': str(args.psnr_frames),
+            'psnr_threshold': str(args.psnr_threshold),
+            'check_frames': str(args.check_frames),
+            'check_threshold': str(args.check_threshold),
+            'rules': list(args.rule or []),
+            'config': str(args.config) if args.config else '',
+            'started': started,
+        })
+
+    def args_from_params(self) -> dict:
+        """Return a dict of argument values reconstructed from stored params.
+
+        Used by --continue to restore a previous invocation's parameters.
+        Only covers stored (conversion) parameters; run-mode flags are not stored.
+        """
+        p = self.params
+
+        def _str(k: str, default: str = '') -> str:
+            return p.get(k, default)
+
+        def _float(k: str, default: float) -> float:
+            v = p.get(k, '')
+            return float(v) if v else default
+
+        def _int(k: str, default: int) -> int:
+            v = p.get(k, '')
+            return int(v) if v else default
+
+        def _path(k: str):
+            v = p.get(k, '')
+            return Path(v) if v else None
+
+        return {
+            'source_dir': _path('source_dir'),
+            'output_dir':  _path('output_dir'),
+            'ext':         _str('ext', '.cine'),
+            'suffix':      _str('suffix', ''),
+            'crf':         _int('crf', 28),
+            'preset':      _str('preset', 'slow'),
+            'fps':         _float('fps', None) if p.get('fps') else None,
+            'max_intensity': _float('max_intensity', 1.0),
+            'contrast':    _float('contrast', 1.0),
+            'gamma':       _float('gamma', 1.0),
+            'psnr_frames': _int('psnr_frames', 5),
+            'psnr_threshold': _float('psnr_threshold', 30.0),
+            'check_frames': _int('check_frames', 5),
+            'check_threshold': _float('check_threshold', 30.0),
+            'rule':        p.get('rules') or None,
+            'config':      _path('config'),
+        }
+
+    def check_folder_match(self, source_dir: Path, output_dir) -> bool:
+        """Return True if stored source_dir and output_dir match the given values."""
+        stored_src = self.params.get('source_dir', '')
+        stored_out = self.params.get('output_dir', '')
+        current_out = str(output_dir) if output_dir is not None else ''
+        return str(source_dir) == stored_src and current_out == stored_out
 
     def add_or_reconcile(
         self,
@@ -186,15 +306,26 @@ class ProgressLog:
         self._write()
 
     def write_initial(self) -> None:
-        """Write the full log once after all files have been registered via
-        add_or_reconcile(). Subsequent writes happen automatically via update()."""
+        """Write the full log once after all files have been registered.
+
+        Subsequent writes happen automatically via update().
+        """
         self._write()
 
     def _write(self) -> None:
-        """Write to a .tmp file then atomically replace the real file."""
+        """Write comment header + CSV to a .tmp file, then atomically replace the real file."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.parent / (self.path.name + '.tmp')
         with tmp.open('w', newline='', encoding='utf-8') as f:
+            # Comment header with stored parameters
+            f.write('# convert_cines progress log\n')
+            for key in PARAM_KEYS:
+                f.write(f'# {key}: {self.params.get(key, "")}\n')
+            for rule in self.params.get('rules', []):
+                f.write(f'# rule: {rule}\n')
+            f.write(f'# started: {self.params.get("started", _now())}\n')
+            f.write(f'# last_run: {_now()}\n')
+            # CSV rows
             writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
             writer.writeheader()
             for rec in self._records.values():
