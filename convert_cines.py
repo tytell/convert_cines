@@ -21,6 +21,7 @@ from check_conversion import (
     check_file,
     verify_psnr,
 )
+from progress_log import ProgressLog, TERMINAL_STATUSES
 
 
 def print_psnr_result(result):
@@ -121,9 +122,9 @@ def resolve_enhancement(rel_path, rules, args):
     return args.max_intensity, args.contrast, args.gamma
 
 
-def build_cmd(src, dst, args, max_intensity, contrast, gamma):
+def build_cmd(src, dst, args, max_intensity, contrast, gamma, *, force_overwrite=False):
     cmd = ["ffmpeg"]
-    if args.overwrite:
+    if args.overwrite or force_overwrite:
         cmd.append("-y")
     else:
         cmd.append("-n")
@@ -213,6 +214,11 @@ def main():
     parser.add_argument("--remove-script", type=Path, default=None, metavar="PATH",
                         help="Path for the generated removal script (default: remove_cines.sh "
                              "next to the source directory). A .bat file is also written for Windows.")
+    parser.add_argument("--progress-file", type=Path, default=None, metavar="PATH",
+                        help="CSV file for tracking progress and enabling resume. "
+                             "Written atomically after each step so a crash loses no status. "
+                             "On resume, completed files are skipped; files whose conversion "
+                             "options changed are automatically re-queued.")
 
     args = parser.parse_args()
 
@@ -244,9 +250,31 @@ def main():
 
     succeeded, skipped, failed = 0, 0, 0
     psnr_failed, check_failed = 0, 0
-    run_psnr = test_mode or args.test_psnr
+    # Inline PSNR is suppressed when --check is active (unless --test-psnr forces it),
+    # since the thorough check subsumes it.
+    run_psnr = (test_mode or args.test_psnr) and (args.test_psnr or not args.check)
     cines_to_remove: list[Path] = []
     seen_src_dirs: set[Path] = set()
+
+    # --- Progress log: register all files before the main loop ---
+    log: ProgressLog | None = None
+    force_overwrite_map: dict[Path, bool] = {}
+    if args.progress_file and not args.dry_run:
+        log = ProgressLog(args.progress_file)
+        log.load()
+        for src in files:
+            dst_pre = output_path(src, args.source_dir, args.output_dir, args.suffix)
+            rel_pre = (src.relative_to(args.source_dir)
+                       if src.is_relative_to(args.source_dir) else Path(src.name))
+            mi, co, ga = resolve_enhancement(rel_pre, rules, args)
+            vf_pre = build_vf(mi, co, ga)
+            _, force_ow, reason = log.add_or_reconcile(
+                src, dst_pre, args.crf, args.preset, args.fps, vf_pre, args.overwrite
+            )
+            if reason:
+                print(f"  {src.name}: re-queued ({reason})")
+            force_overwrite_map[src] = force_ow
+        log.write_initial()
 
     for i, src in enumerate(files, 1):
         is_first_in_dir = src.parent not in seen_src_dirs
@@ -262,48 +290,84 @@ def main():
 
         check_dir = args.check_dir or (dst.parent if args.keep_frames else None)
 
-        if dst.exists() and not args.overwrite:
+        record = log.get(src) if log else None
+        status = record.status if record else 'queued'
+        force_ow = force_overwrite_map.get(src, False)
+
+        # Skip files that are fully done (both statuses mean no further work remains)
+        if status in TERMINAL_STATUSES:
+            print(f"  skipping ({status})")
+            if args.remove_cine and status == 'check_passed' and not is_first_in_dir:
+                cines_to_remove.append(src)
+            skipped += 1
+            continue
+
+        # --- Conversion ---
+        conversion_ok = False
+        if status in ('converted', 'psnr_passed', 'psnr_failed'):
+            # Already converted in a prior run; skip ffmpeg
+            skipped += 1
+            conversion_ok = True
+        elif dst.exists() and not args.overwrite and not force_ow:
             print("  skipping (output exists)")
             skipped += 1
-            if args.check and not args.test_frames:
-                r = check_file(src, dst, vf, n_frames=args.check_frames,
-                               threshold=args.check_threshold,
-                               check_dir=check_dir, verbose=args.verbose)
-                print_check_result(r)
-                if not r.passed:
-                    check_failed += 1
-                elif args.remove_cine and not is_first_in_dir:
-                    cines_to_remove.append(src)
-            continue
-
-        cmd = build_cmd(src, dst, args, max_intensity, contrast, gamma)
-
-        if args.dry_run:
-            print(" ", " ".join(cmd))
-            continue
-
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        result = subprocess.run(cmd)
-        if result.returncode != 0:
-            print(f"  ERROR: ffmpeg exited with code {result.returncode}", file=sys.stderr)
-            failed += 1
+            if log:
+                log.update(src, 'converted')
+            conversion_ok = True
         else:
-            succeeded += 1
-            if run_psnr:
-                r = verify_psnr(src, dst, vf, n_frames=args.psnr_frames,
-                                threshold=args.psnr_threshold, verbose=args.verbose)
-                print_psnr_result(r)
-                if not r.passed:
-                    psnr_failed += 1
-            if args.check and not args.test_frames:
-                r = check_file(src, dst, vf, n_frames=args.check_frames,
-                               threshold=args.check_threshold,
-                               check_dir=check_dir, verbose=args.verbose)
-                print_check_result(r)
-                if not r.passed:
-                    check_failed += 1
-                elif args.remove_cine and not is_first_in_dir:
-                    cines_to_remove.append(src)
+            cmd = build_cmd(src, dst, args, max_intensity, contrast, gamma,
+                            force_overwrite=force_ow)
+            if args.dry_run:
+                print(" ", " ".join(cmd))
+                continue
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            result = subprocess.run(cmd)
+            if result.returncode != 0:
+                print(f"  ERROR: ffmpeg exited with code {result.returncode}", file=sys.stderr)
+                failed += 1
+                if log:
+                    log.update(src, 'conversion_failed',
+                               error=f"ffmpeg exit code {result.returncode}")
+            else:
+                succeeded += 1
+                conversion_ok = True
+                if log:
+                    log.update(src, 'converted')
+
+        if not conversion_ok:
+            continue
+
+        # --- Inline PSNR ---
+        if run_psnr and status not in ('psnr_passed', 'psnr_failed'):
+            r = verify_psnr(src, dst, vf, n_frames=args.psnr_frames,
+                            threshold=args.psnr_threshold, verbose=args.verbose)
+            print_psnr_result(r)
+            if not r.passed:
+                psnr_failed += 1
+            if log and not r.error:
+                psnrs = [f.psnr for f in r.frames]
+                log.update(src, 'psnr_passed' if r.passed else 'psnr_failed',
+                           psnr_avg=sum(psnrs) / len(psnrs), psnr_min=min(psnrs))
+
+        # --- Thorough check ---
+        if args.check and not args.test_frames:
+            r = check_file(src, dst, vf, n_frames=args.check_frames,
+                           threshold=args.check_threshold,
+                           check_dir=check_dir, verbose=args.verbose)
+            print_check_result(r)
+            if not r.passed:
+                check_failed += 1
+            elif args.remove_cine and not is_first_in_dir:
+                cines_to_remove.append(src)
+            if log:
+                psnrs = [f.psnr for f in r.frames] if r.frames else []
+                log.update(
+                    src,
+                    'check_passed' if r.passed else 'check_failed',
+                    check_avg=sum(psnrs) / len(psnrs) if psnrs else None,
+                    check_min=min(psnrs) if psnrs else None,
+                    error=r.error or '',
+                )
 
     if not args.dry_run:
         summary = f"\nDone: {succeeded} succeeded, {skipped} skipped, {failed} failed."
