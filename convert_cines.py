@@ -13,7 +13,7 @@ logging.basicConfig(level=logging.WARNING,
                     format='%(name)s - %(levelname)s - %(message)s')
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
 
 from check_conversion import (
     DEFAULT_PSNR_FRAMES,
@@ -199,8 +199,6 @@ def main():
                              "from source and output. Runs after conversion and for skipped files.")
     parser.add_argument("--check-frames", type=int, default=DEFAULT_PSNR_FRAMES, metavar="N",
                         help=f"Frames to sample for --check (default: {DEFAULT_PSNR_FRAMES})")
-    parser.add_argument("--check-threshold", type=float, default=DEFAULT_PSNR_THRESHOLD, metavar="T",
-                        help=f"Minimum acceptable PSNR in dB for --check (default: {DEFAULT_PSNR_THRESHOLD})")
     parser.add_argument("--check-dir", type=Path, default=None, metavar="DIR",
                         help="Save extracted grayscale PNGs here for visual inspection "
                              "(default: temp dir, cleaned up after each file)")
@@ -242,6 +240,8 @@ def main():
     if test_mode:
         print(f"[TEST MODE] Processing {len(files)} file(s)")
 
+    logger.debug(f"{args.psnr_threshold=}, {args.psnr_frames=}")
+
     succeeded, skipped, failed = 0, 0, 0
     psnr_failed, check_failed = 0, 0
     run_psnr = test_mode or args.test_psnr
@@ -267,7 +267,7 @@ def main():
             skipped += 1
             if args.check and not args.test_frames:
                 r = check_file(src, dst, vf, n_frames=args.check_frames,
-                               threshold=args.check_threshold,
+                               threshold=args.psnr_threshold,
                                check_dir=check_dir, verbose=args.verbose)
                 print_check_result(r)
                 if not r.passed:
@@ -289,6 +289,7 @@ def main():
             failed += 1
         else:
             succeeded += 1
+            logger.debug(f"{args.psnr_threshold=}, {args.psnr_frames=}")
             if run_psnr:
                 r = verify_psnr(src, dst, vf, n_frames=args.psnr_frames,
                                 threshold=args.psnr_threshold, verbose=args.verbose)
@@ -297,7 +298,7 @@ def main():
                     psnr_failed += 1
             if args.check and not args.test_frames:
                 r = check_file(src, dst, vf, n_frames=args.check_frames,
-                               threshold=args.check_threshold,
+                               threshold=args.psnr_threshold,
                                check_dir=check_dir, verbose=args.verbose)
                 print_check_result(r)
                 if not r.passed:
