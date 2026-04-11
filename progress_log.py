@@ -43,7 +43,7 @@ PARAM_KEYS = [
     'crf', 'preset', 'fps',
     'max_intensity', 'contrast', 'gamma',
     'psnr_frames', 'psnr_threshold',
-    'check_frames', 'check_threshold',
+    'check_frames', 
     'config',
 ]
 
@@ -151,7 +151,6 @@ class ProgressLog:
             'psnr_frames': str(args.psnr_frames),
             'psnr_threshold': str(args.psnr_threshold),
             'check_frames': str(args.check_frames),
-            'check_threshold': str(args.check_threshold),
             'rules': list(args.rule or []),
             'config': str(args.config) if args.config else '',
             'started': started,
@@ -194,7 +193,6 @@ class ProgressLog:
             'psnr_frames': _int('psnr_frames', 5),
             'psnr_threshold': _float('psnr_threshold', 30.0),
             'check_frames': _int('check_frames', 5),
-            'check_threshold': _float('check_threshold', 30.0),
             'rule':        p.get('rules') or None,
             'config':      _path('config'),
         }
