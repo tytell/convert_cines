@@ -502,7 +502,7 @@ def main():
             f.write("# Auto-generated: CINE files that passed --check\n")
             f.write("# Review this list, then run: bash {}\n\n".format(sh_path.name))
             for p in cines_to_remove:
-                f.write(f"rm {p}\n")
+                f.write(f'rm "{p}"\n')
         sh_path.chmod(sh_path.stat().st_mode | 0o111)
 
         with bat_path.open("w") as f:
