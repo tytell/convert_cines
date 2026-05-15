@@ -1,27 +1,41 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [
+#     "numpy>=2.4.4",
+#     "pycine>=0.3.2",
+# ]
+# ///
 """
 find_matched_cine_mp4.py — find video files with matching names, verify content
-via PSNR, preserve CINE metadata, and generate a removal script for the larger file.
+via Spearman rank correlation, preserve CINE metadata, and generate a removal
+script for the larger file.
 """
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+# Make sibling modules (check_conversion) importable when run from any directory
+sys.path.insert(0, str(Path(__file__).parent))
+
 import argparse
 import ctypes
-import math
 import os
 import shutil
 import struct
 import subprocess
-import sys
 import tempfile
 import xml.etree.ElementTree as ET
 from itertools import combinations
-from pathlib import Path
+from pycine.file import read_header
 
-from check_conversion import CheckResult, FrameResult, _extract_gray_png, _get_duration, _timestamps, _parse_psnr_y
+import numpy as np
 
-DEFAULT_MATCH_PSNR_THRESHOLD = 20.0
-DEFAULT_PSNR_FRAMES = 5
+from check_conversion import CheckResult, FrameResult, _extract_gray_png, _get_duration, _timestamps
+
+DEFAULT_MATCH_THRESHOLD = 0.99
+DEFAULT_FRAMES = 5
 
 
 # ---------------------------------------------------------------------------
@@ -47,8 +61,30 @@ def group_by_stem(files: list[Path]) -> dict[tuple[Path, str], list[Path]]:
 
 
 # ---------------------------------------------------------------------------
-# PSNR check
+# Spearman rank correlation check
 # ---------------------------------------------------------------------------
+
+def _load_gray_pixels(path: Path) -> np.ndarray:
+    """Read a grayscale PNG as a flat float32 array via ffmpeg pipe."""
+    cmd = ["ffmpeg", "-v", "error", "-i", str(path),
+           "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1"]
+    res = subprocess.run(cmd, capture_output=True)
+    if res.returncode != 0:
+        raise RuntimeError(f"Failed to read pixels from {path.name}: {res.stderr.decode()[-200:]}")
+    return np.frombuffer(res.stdout, dtype=np.uint8).astype(np.float32)
+
+
+def _spearman_corr(a: np.ndarray, b: np.ndarray) -> float:
+    """Spearman rank correlation of two flat pixel arrays.
+
+    Invariant to any monotonic per-pixel transform (gain, gamma, curves),
+    but sensitive to spatial differences — a reshuffled image scores near 0.
+    """
+    n = min(len(a), len(b))
+    rank_a = np.argsort(np.argsort(a[:n])).astype(np.float64)
+    rank_b = np.argsort(np.argsort(b[:n])).astype(np.float64)
+    return float(np.corrcoef(rank_a, rank_b)[0, 1])
+
 
 def check_pair(
     file_a: Path,
@@ -92,33 +128,18 @@ def check_pair(
             try:
                 _extract_gray_png(file_a, ta, None, png_a)
                 _extract_gray_png(file_b, tb, None, png_b)
+                pixels_a = _load_gray_pixels(png_a)
+                pixels_b = _load_gray_pixels(png_b)
+                corr = _spearman_corr(pixels_a, pixels_b)
             except RuntimeError as e:
                 return CheckResult(src=file_a, dst=file_b, frames=frames, passed=False,
                                    threshold=threshold, error=str(e))
 
-            cmd = [
-                "ffmpeg", "-hide_banner",
-                "-i", str(png_a), "-i", str(png_b),
-                "-lavfi", "[0:v][1:v]psnr",
-                "-f", "null", "-",
-            ]
-            res = subprocess.run(cmd, capture_output=True, text=True)
-            if res.returncode != 0:
-                return CheckResult(src=file_a, dst=file_b, frames=frames, passed=False,
-                                   threshold=threshold,
-                                   error=f"PSNR failed at t={ta:.2f}s: {res.stderr[-300:]}")
-            try:
-                psnr = _parse_psnr_y(res.stderr)
-            except RuntimeError as e:
-                return CheckResult(src=file_a, dst=file_b, frames=frames, passed=False,
-                                   threshold=threshold, error=str(e))
-
-            passed = math.isinf(psnr) or psnr >= threshold
-            frames.append(FrameResult(index=i, timestamp=ta, psnr=psnr, passed=passed))
+            passed = corr >= threshold
+            frames.append(FrameResult(index=i, timestamp=ta, psnr=corr, passed=passed))
 
             if verbose:
-                psnr_s = "inf" if math.isinf(psnr) else f"{psnr:.1f}"
-                print(f"    frame {i+1}/{n_frames} t={ta:.2f}s  PSNR={psnr_s} dB  [{'PASS' if passed else 'FAIL'}]")
+                print(f"    frame {i+1}/{n_frames} t={ta:.2f}s  r={corr:.4f}  [{'PASS' if passed else 'FAIL'}]")
 
     all_passed = all(f.passed for f in frames)
     return CheckResult(src=file_a, dst=file_b, frames=frames, passed=all_passed, threshold=threshold)
@@ -250,7 +271,6 @@ def _struct_to_xml(
 
 
 def extract_cine_metadata(cine_path: Path) -> dict:
-    from pycine.file import read_header
     return read_header(str(cine_path))
 
 
@@ -349,7 +369,7 @@ def _fmt_size(n: int) -> str:
         return f'{n / 1024 ** 3:.1f} GB'
 
 
-def _fmt_psnr_result(result: CheckResult, label: str = 'psnr') -> str:
+def _fmt_corr_result(result: CheckResult, label: str = 'check') -> str:
     if result.error:
         return f'  {label}: ERROR  {result.error}'
     frames = result.frames
@@ -357,13 +377,13 @@ def _fmt_psnr_result(result: CheckResult, label: str = 'psnr') -> str:
         return f'  {label}: ERROR  no frames compared'
     n = len(frames)
     passed_n = sum(1 for f in frames if f.passed)
-    finite = [f.psnr for f in frames if not math.isinf(f.psnr)]
-    avg_s = 'inf' if not finite else f'{sum(finite) / len(finite):.1f}'
-    min_p = min(f.psnr for f in frames)
-    min_s = 'inf' if math.isinf(min_p) else f'{min_p:.1f}'
+    corrs = [f.psnr for f in frames]   # psnr field repurposed to store correlation
+    avg = sum(corrs) / len(corrs)
+    min_c = min(corrs)
     if result.passed:
-        return f'  {label}: PASS  (avg {avg_s} dB, min {min_s} dB, {passed_n}/{n} frames)'
-    return f'  {label}: FAIL  (avg {avg_s} dB, min {min_s} dB, {passed_n}/{n} frames passed, threshold {result.threshold:.1f} dB)'
+        return f'  {label}: PASS  (avg r={avg:.4f}, min r={min_c:.4f}, {passed_n}/{n} frames)'
+    return (f'  {label}: FAIL  (avg r={avg:.4f}, min r={min_c:.4f}, '
+            f'{passed_n}/{n} frames passed, threshold {result.threshold:.3f})')
 
 
 # ---------------------------------------------------------------------------
@@ -372,18 +392,19 @@ def _fmt_psnr_result(result: CheckResult, label: str = 'psnr') -> str:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Find matched video pairs, verify via PSNR, preserve CINE metadata, '
-                    'generate a removal script for the larger file in each passing pair.'
+        description='Find matched video pairs, verify content via Spearman rank correlation, '
+                    'preserve CINE metadata, and generate a removal script for the larger file '
+                    'in each passing pair.'
     )
     parser.add_argument('source_dir', type=Path)
     parser.add_argument('--ext', default='.cine,.mp4,.avi,.mov',
                         help='Comma-separated extensions to consider (default: .cine,.mp4,.avi,.mov)')
-    parser.add_argument('--psnr-threshold', type=float, default=DEFAULT_MATCH_PSNR_THRESHOLD,
+    parser.add_argument('--threshold', type=float, default=DEFAULT_MATCH_THRESHOLD,
                         metavar='T',
-                        help=f'Minimum PSNR in dB to count a pair as matching (default: {DEFAULT_MATCH_PSNR_THRESHOLD})')
-    parser.add_argument('--psnr-frames', type=int, default=DEFAULT_PSNR_FRAMES,
+                        help=f'Minimum Spearman rank correlation to count a pair as matching (default: {DEFAULT_MATCH_THRESHOLD})')
+    parser.add_argument('--frames', type=int, default=DEFAULT_FRAMES,
                         metavar='N',
-                        help=f'Number of frames to sample per pair (default: {DEFAULT_PSNR_FRAMES})')
+                        help=f'Number of frames to sample per pair (default: {DEFAULT_FRAMES})')
     parser.add_argument('--check-dir', type=Path, default=None, metavar='DIR',
                         help='Save extracted grayscale PNGs under DIR, '
                              'mirroring the source directory structure')
@@ -396,9 +417,9 @@ def main():
     parser.add_argument('--no-metadata', action='store_true',
                         help='Skip XML metadata extraction/copy for CINE files')
     parser.add_argument('-n', '--dry-run', action='store_true',
-                        help='List matches without running PSNR or writing scripts')
+                        help='List matches without running checks or writing scripts')
     parser.add_argument('-v', '--verbose', action='store_true',
-                        help='Print per-frame PSNR values')
+                        help='Print per-frame correlation values')
     args = parser.parse_args()
 
     source_dir = args.source_dir.resolve()
@@ -455,12 +476,12 @@ def main():
 
         result = check_pair(
             file_a, file_b,
-            n_frames=args.psnr_frames,
-            threshold=args.psnr_threshold,
+            n_frames=args.frames,
+            threshold=args.threshold,
             check_dir=pair_check_dir,
             verbose=args.verbose,
         )
-        print(_fmt_psnr_result(result))
+        print(_fmt_corr_result(result))
 
         if result.error:
             n_error += 1
@@ -486,7 +507,7 @@ def main():
             n_failed += 1
 
     if args.dry_run:
-        print(f'\nDry run: {len(pairs)} pair(s) found. Run without -n to check PSNR.')
+        print(f'\nDry run: {len(pairs)} pair(s) found. Run without -n to check.')
         return
 
     print(f'\nDone: {n_passed} passed, {n_failed} failed', end='')
