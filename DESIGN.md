@@ -539,3 +539,135 @@ class ProgressLog:
     def write_initial(self) -> None: ...           # one-shot write after pre-loop
     def _write(self) -> None: ...                  # write .tmp then os.replace()
 ```
+
+---
+
+## `find_matched_cine_mp4.py` — find and verify matched source/converted pairs
+
+A companion script for cleaning up after a batch conversion. It finds video files that share the same stem in the same directory, verifies the content matches via PSNR, and generates a removal script for the larger file in each passing pair.
+
+### Discovery and matching
+
+Walk `source_dir` recursively and collect all files whose suffix (lowercased) is in the configured extension set (default: `.cine`, `.mp4`, `.avi`, `.mov`). Group by `(parent_dir, stem)`. Any group with two or more files is a _match group_.
+
+Within a match group with exactly two files, one pair is checked. For groups with three or more files, every unique pair is checked (e.g. `.cine` + `.mp4` + `.avi` → three pairs). In practice, groups of two are the common case.
+
+### PSNR check
+
+Reuses `_extract_gray_png` and the PSNR pipeline from `check_conversion.py`. For each pair:
+
+1. Get durations of both files via `_get_duration`.
+2. Sample `N` timestamps from each file via `_timestamps` (proportionally distributed, first 3 skipped to avoid keyframe artifacts).
+3. Extract a grayscale PNG from each file at each timestamp using `_extract_gray_png` — with `vf=None` for both, since the conversion filter is unknown.
+4. Compare each PNG pair with ffmpeg's `psnr` lavfi filter; parse `psnr_y` from stderr.
+5. A pair passes if all sampled frames meet `--psnr-threshold`.
+
+**Why the default threshold is lower (20 dB vs 30 dB):** `convert_cines.py` re-applies the known `vf` filter to the source before comparing, making it a near-identical comparison. Here the filter is unknown — the source may have been brightened, contrast-adjusted, or gamma-corrected. PSNR between raw original and enhanced encoded copy is typically 15–25 dB for a correct conversion. The 20 dB default is meant to confirm _same content_, not _lossless copy_.
+
+### Metadata preservation
+
+Before a CINE file can be safely deleted, its camera parameters must be preserved alongside the surviving MP4. Two sources are handled:
+
+**Case 1 — XML sidecar already exists** (e.g. `shot1.cine` + `shot1.xml` saved by Phantom software): copy the XML to sit next to the MP4 if the two files are in different directories; if they're already co-located, do nothing.
+
+**Case 2 — No XML sidecar**: use `pycine.file.read_header` to extract the binary header and generate a new XML. The output mirrors the Phantom sidecar schema (`CineFileHeader`, `BitmapInfoHeader`, `CameraSetup`) so it is human-readable and compatible with any tooling that already parses Phantom XML files.
+
+Fields written from `read_header`:
+
+| XML element | pycine source | Notes |
+|---|---|---|
+| `CineFileHeader/*` | `header['cinefileheader']` | FirstMovieImage, ImageCount, TriggerTime, … |
+| `BitmapInfoHeader/*` | `header['bitmapinfoheader']` | Width, height, bit depth, … |
+| `CameraSetup/*` | `header['setup']` | All SETUP fields: ShutterNs, FrameRate, RealBPP, BlackLevel, WhiteLevel, fGain, fGamma, Serial, Description, WBGain, … |
+
+`TIMEBLOCK` and `EXPOSUREBLOCK` (per-frame timestamps and per-frame exposure) are **not** written when generating from the binary, because pycine does not parse those tagged blocks. If the existing Phantom XML is present, it is used as-is and those blocks are preserved.
+
+Metadata is written before the CINE is added to the removal script, so a dry run (`-n`) generates and shows the XML path without deleting anything.
+
+### Removal script
+
+For every pair that passes, the **larger** file (by byte size) is written to a shell/bat removal script — the same format used by `convert_cines.py --remove-cine`. The user reviews and runs the script manually.
+
+```sh
+#!/bin/sh
+# Auto-generated: video files with a smaller matched copy that passed PSNR check
+# Review this list, then run: bash remove_originals.sh
+
+rm /data/run1/shot1.cine
+rm /data/run1/shot2.cine
+```
+
+### Arguments
+
+| Flag | Default | Description |
+|---|---|---|
+| `source_dir` | _(required)_ | Root directory to scan |
+| `--ext LIST` | `.cine,.mp4,.avi,.mov` | Comma-separated extensions to consider |
+| `--psnr-threshold T` | `20.0` | Minimum PSNR in dB to count a pair as matching |
+| `--psnr-frames N` | `5` | Number of frames to sample per pair |
+| `--check-dir DIR` | _(temp, cleaned up)_ | Save extracted grayscale PNGs for visual inspection |
+| `--remove-script PATH` | `remove_originals` next to `source_dir` | Base path for `.sh` / `.bat` scripts (no extension) |
+| `--no-metadata` | off | Skip XML metadata extraction/copy |
+| `-n` / `--dry-run` | off | List matches without running PSNR or writing scripts |
+| `-v` / `--verbose` | off | Print per-frame PSNR values |
+
+### Output format
+
+```
+[1/3] run1/shot1: .cine (48 MB)  vs  .mp4 (3.1 MB)
+  psnr: PASS  (avg 23.4 dB, min 21.8 dB, 5/5 frames)  → .cine queued for removal
+[2/3] run1/shot2: .cine (51 MB)  vs  .mp4 (3.3 MB)
+  psnr: PASS  (avg 24.1 dB, min 22.5 dB, 5/5 frames)  → .cine queued for removal
+[3/3] run2/shot1: .avi (120 MB)  vs  .mp4 (4.0 MB)
+  psnr: FAIL  (avg 11.2 dB, min 9.4 dB, 0/5 frames passed, threshold 20.0 dB)
+
+Done: 2 passed, 1 failed.  Originals queued for removal: 2.
+
+Removal scripts written:
+  Mac/Linux: remove_originals.sh
+  Windows:   remove_originals.bat
+```
+
+### Module structure
+
+```python
+DEFAULT_MATCH_PSNR_THRESHOLD = 20.0   # separate from check_conversion defaults
+
+def find_video_files(source_dir: Path, exts: set[str]) -> list[Path]: ...
+    # os.walk, filter by suffix.lower(), return sorted list
+
+def group_by_stem(files: list[Path]) -> dict[tuple[Path, str], list[Path]]: ...
+    # key = (parent, stem.lower()); value = list of matching paths
+
+def check_pair(
+    file_a: Path,
+    file_b: Path,
+    *,
+    n_frames: int,
+    threshold: float,
+    check_dir: Path | None,
+    verbose: bool,
+) -> CheckResult: ...
+    # calls _extract_gray_png + psnr; returns CheckResult with larger_file attr
+
+def ensure_metadata(cine_path: Path, mp4_path: Path) -> Path | None: ...
+    # Returns the XML path written (or None if --no-metadata).
+    # If <cine_path>.with_suffix('.xml') exists: copy to mp4_path.with_suffix('.xml')
+    #   if the two dirs differ; otherwise no-op.
+    # Else: call extract_cine_metadata(cine_path) and write next to mp4_path.
+
+def extract_cine_metadata(cine_path: Path) -> dict: ...
+    # Calls pycine.file.read_header; returns a plain dict of all scalar fields
+    # from cinefileheader, bitmapinfoheader, and setup (arrays serialised to lists).
+
+def write_metadata_xml(meta: dict, out_path: Path) -> None: ...
+    # Serialises the dict to Phantom-compatible XML (CineFileHeader +
+    # BitmapInfoHeader + CameraSetup elements); uses xml.etree.ElementTree.
+
+def write_removal_script(to_remove: list[Path], script_base: Path) -> None: ...
+    # writes .sh and .bat; same format as convert_cines.py
+
+def main(): ...
+```
+
+`check_pair` imports `_extract_gray_png`, `_get_duration`, `_timestamps`, and `_parse_psnr_y` from `check_conversion` directly; no new PSNR logic is needed. `extract_cine_metadata` and `write_metadata_xml` use only `pycine` and `xml.etree.ElementTree` (stdlib).

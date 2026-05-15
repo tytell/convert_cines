@@ -7,6 +7,7 @@ Recursively converts video files (default: `.cine`) to H.265 MP4 using ffmpeg. S
 - Python 3.10+, managed by `uv`
 - `ffmpeg` on PATH
 - `pyyaml` (only needed when using `--config`)
+- `pycine` (only needed by `find_matched_cine_mp4.py` for metadata extraction)
 
 ## Usage
 
@@ -172,3 +173,38 @@ Example with mirrored output:
 source:  rawdata/run1/sub/shot1.cine
 output:  rawdata/compressed/run1/sub/shot1.mp4
 ```
+
+---
+
+## Cleaning up after conversion: `find_matched_cine_mp4.py`
+
+After a batch conversion, use `find_matched_cine_mp4.py` to find original source files that have a converted counterpart in the same directory, verify the content matches via PSNR, and generate a removal script for the originals (the larger file in each passing pair). Before queuing a CINE for removal, the tool preserves its camera metadata as an XML file next to the MP4 — using the existing Phantom-generated XML sidecar if present, or extracting it from the binary header with `pycine` if not.
+
+```bash
+# Find matched pairs, check PSNR, write removal script
+uv run find_matched_cine_mp4.py rawdata/
+
+# Dry run: list matches without running PSNR
+uv run find_matched_cine_mp4.py rawdata/ --dry-run
+
+# Adjust threshold (lower tolerates more difference; default 0.99)
+uv run find_matched_cine_mp4.py rawdata/ --threshold 0.95
+
+# Save extracted frames to a separate directory (mirrors source tree)
+uv run find_matched_cine_mp4.py rawdata/ --check-dir /tmp/frames
+
+# Save extracted frames next to the video files
+uv run find_matched_cine_mp4.py rawdata/ --keep-frames
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `source_dir` | _(required)_ | Root directory to scan |
+| `--ext LIST` | `.cine,.mp4,.avi,.mov` | Comma-separated extensions to consider |
+| `--threshold T` | `0.99` | Minimum Spearman rank correlation to count a pair as matching |
+| `--frames N` | `5` | Number of frames to sample per pair |
+| `--check-dir DIR` | _(temp, cleaned up)_ | Save extracted grayscale PNGs under DIR, mirroring source tree |
+| `--keep-frames` | off | Save extracted check frames next to the video files |
+| `--remove-script PATH` | `remove_originals` next to `source_dir` | Base path for `.sh` / `.bat` removal scripts |
+| `-n` / `--dry-run` | off | List matches without running PSNR or writing scripts |
+| `-v` / `--verbose` | off | Print per-frame PSNR values |
