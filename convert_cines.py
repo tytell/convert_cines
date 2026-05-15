@@ -201,8 +201,8 @@ def main():
     parser.add_argument("--check-frames", type=int, default=DEFAULT_PSNR_FRAMES, metavar="N",
                         help=f"Frames to sample for --check (default: {DEFAULT_PSNR_FRAMES})")
     parser.add_argument("--check-dir", type=Path, default=None, metavar="DIR",
-                        help="Save extracted grayscale PNGs here for visual inspection "
-                             "(default: temp dir, cleaned up after each file)")
+                        help="Save extracted grayscale PNGs under DIR, "
+                             "mirroring the source directory structure")
     parser.add_argument("--keep-frames", action="store_true",
                         help="Save extracted check frames alongside the converted MP4 "
                              "(ignored if --check-dir is set)")
@@ -387,7 +387,16 @@ def main():
         if rules and args.verbose:
             print(f"  enhancement: max_intensity={max_intensity} contrast={contrast} gamma={gamma}")
 
-        check_dir = args.check_dir or (dst.parent if args.keep_frames else None)
+        if args.check_dir is not None:
+            try:
+                rel = src.parent.relative_to(args.source_dir)
+            except ValueError:
+                rel = Path('.')
+            check_dir = args.check_dir / rel
+        elif args.keep_frames:
+            check_dir = dst.parent
+        else:
+            check_dir = None
 
         record = log.get(src) if log else None
         status = record.status if record else 'queued'

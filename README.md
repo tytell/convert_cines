@@ -190,8 +190,11 @@ uv run find_matched_cine_mp4.py rawdata/ --dry-run
 # Adjust threshold (lower tolerates more enhancement difference; default 20 dB)
 uv run find_matched_cine_mp4.py rawdata/ --psnr-threshold 15
 
-# Save extracted frames for visual inspection
+# Save extracted frames to a separate directory (mirrors source tree)
 uv run find_matched_cine_mp4.py rawdata/ --check-dir /tmp/frames
+
+# Save extracted frames next to the video files
+uv run find_matched_cine_mp4.py rawdata/ --keep-frames
 ```
 
 | Flag | Default | Description |
@@ -200,7 +203,8 @@ uv run find_matched_cine_mp4.py rawdata/ --check-dir /tmp/frames
 | `--ext LIST` | `.cine,.mp4,.avi,.mov` | Comma-separated extensions to consider |
 | `--psnr-threshold T` | `20.0` | Minimum PSNR in dB to count a pair as matching |
 | `--psnr-frames N` | `5` | Number of frames to sample per pair |
-| `--check-dir DIR` | _(temp, cleaned up)_ | Save extracted grayscale PNGs for visual inspection |
+| `--check-dir DIR` | _(temp, cleaned up)_ | Save extracted grayscale PNGs under DIR, mirroring source tree |
+| `--keep-frames` | off | Save extracted check frames next to the video files |
 | `--remove-script PATH` | `remove_originals` next to `source_dir` | Base path for `.sh` / `.bat` removal scripts |
 | `-n` / `--dry-run` | off | List matches without running PSNR or writing scripts |
 | `-v` / `--verbose` | off | Print per-frame PSNR values |

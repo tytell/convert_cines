@@ -83,8 +83,8 @@ def check_pair(
         for i, (ta, tb) in enumerate(zip(times_a, times_b)):
             stem = file_a.stem
             if check_dir is not None:
-                png_a = check_dir / f"{stem}_{i:03d}_a.png"
-                png_b = check_dir / f"{stem}_{i:03d}_b.png"
+                png_a = check_dir / f"{stem}_{i:03d}{file_a.suffix}.png"
+                png_b = check_dir / f"{stem}_{i:03d}{file_b.suffix}.png"
             else:
                 png_a = tmp / f"a_{i:03d}.png"
                 png_b = tmp / f"b_{i:03d}.png"
@@ -384,8 +384,12 @@ def main():
     parser.add_argument('--psnr-frames', type=int, default=DEFAULT_PSNR_FRAMES,
                         metavar='N',
                         help=f'Number of frames to sample per pair (default: {DEFAULT_PSNR_FRAMES})')
-    parser.add_argument('--check-dir', type=Path, default=None,
-                        help='Save extracted grayscale PNGs here for visual inspection')
+    parser.add_argument('--check-dir', type=Path, default=None, metavar='DIR',
+                        help='Save extracted grayscale PNGs under DIR, '
+                             'mirroring the source directory structure')
+    parser.add_argument('--keep-frames', action='store_true',
+                        help='Save extracted check frames alongside the video files '
+                             '(ignored if --check-dir is set)')
     parser.add_argument('--remove-script', type=Path, default=None,
                         help='Base path for removal scripts (no extension; '
                              'default: remove_originals next to source_dir)')
@@ -438,11 +442,22 @@ def main():
         if args.dry_run:
             continue
 
+        if args.check_dir is not None:
+            try:
+                rel = file_a.parent.relative_to(source_dir)
+            except ValueError:
+                rel = Path('.')
+            pair_check_dir = args.check_dir / rel
+        elif args.keep_frames:
+            pair_check_dir = file_a.parent
+        else:
+            pair_check_dir = None
+
         result = check_pair(
             file_a, file_b,
             n_frames=args.psnr_frames,
             threshold=args.psnr_threshold,
-            check_dir=args.check_dir,
+            check_dir=pair_check_dir,
             verbose=args.verbose,
         )
         print(_fmt_psnr_result(result))
