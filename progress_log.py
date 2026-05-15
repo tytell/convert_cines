@@ -1,23 +1,26 @@
 """
-Progress log for convert_cines.py.
+Progress logs for convert_cines.py and find_matched_cine_mp4.py.
 
-Tracks per-file conversion status in a human-readable CSV so that long runs
-can be resumed after interruption. The file is updated atomically (write to
-.tmp then os.replace) after each status transition, so a crash never leaves
-a partially-written file.
+Both logs write a human-readable CSV preceded by comment lines that record run
+parameters. Files are updated atomically (write to .tmp then os.replace) after
+each status transition, so a crash never leaves a partially-written file.
 
-The CSV is preceded by comment lines (starting with #) that record all
-conversion parameters so a run can be resumed with --continue without
-re-specifying them.
+ProgressLog — used by convert_cines.py
+    Status progression:
+        queued
+          → converted          (ffmpeg succeeded)
+          → conversion_failed  (ffmpeg non-zero)
+          → psnr_passed        (inline PSNR check passed)
+          → psnr_failed        (inline PSNR check failed)
+          → check_passed       (thorough --check passed)
+          → check_failed       (thorough --check failed)
 
-Status progression:
-    queued
-      → converted          (ffmpeg succeeded)
-      → conversion_failed  (ffmpeg non-zero)
-      → psnr_passed        (inline PSNR check passed)
-      → psnr_failed        (inline PSNR check failed)
-      → check_passed       (thorough --check passed)
-      → check_failed       (thorough --check failed)
+PairProgressLog — used by find_matched_cine_mp4.py
+    Status progression:
+        queued
+          → passed             (Spearman correlation check passed)
+          → failed             (Spearman correlation check failed)
+          → error              (exception during check — retried on resume)
 """
 from __future__ import annotations
 
@@ -28,6 +31,11 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
+
+# ---------------------------------------------------------------------------
+# ProgressLog constants
+# ---------------------------------------------------------------------------
 
 FIELDNAMES = [
     'source', 'output', 'status',
@@ -43,20 +51,48 @@ PARAM_KEYS = [
     'crf', 'preset', 'fps',
     'max_intensity', 'contrast', 'gamma',
     'psnr_frames', 'psnr_threshold',
-    'check_frames', 
+    'check_frames',
     'config',
 ]
 
 # Statuses where all work is done — skip on resume
 TERMINAL_STATUSES = frozenset({'check_passed', 'check_failed'})
 
+# ---------------------------------------------------------------------------
+# PairProgressLog constants
+# ---------------------------------------------------------------------------
+
+PAIR_FIELDNAMES = [
+    'source', 'output', 'status',
+    'corr_avg', 'corr_min',
+    'updated', 'error',
+]
+
+PAIR_PARAM_KEYS = [
+    'source_dir', 'ext', 'threshold', 'frames', 'no_metadata',
+]
+
+PAIR_TERMINAL_STATUSES = frozenset({'passed', 'failed'})
+
+# ---------------------------------------------------------------------------
+# Shared utilities
+# ---------------------------------------------------------------------------
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
 
+def _fmt_float(v: float, decimals: int = 2) -> str:
+    return 'inf' if math.isinf(v) else f'{v:.{decimals}f}'
+
+
 def _fmt_psnr(v: float) -> str:
-    return 'inf' if math.isinf(v) else f'{v:.2f}'
+    return _fmt_float(v, 2)
+
+# ---------------------------------------------------------------------------
+# Record dataclasses
+# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -84,19 +120,36 @@ class FileRecord:
         )
 
 
-class ProgressLog:
-    """Human-readable CSV progress tracker with atomic writes."""
+@dataclass
+class PairRecord:
+    source: str   # file_a
+    output: str   # file_b
+    status: str = 'queued'
+    corr_avg: str = ''
+    corr_min: str = ''
+    updated: str = ''
+    error: str = ''
+
+# ---------------------------------------------------------------------------
+# Base class
+# ---------------------------------------------------------------------------
+
+
+class _BaseProgressLog:
+    """Shared CSV infrastructure: atomic writes, comment-header params, CSV rows."""
+
+    _title: str = 'progress log'
+    _param_keys: list[str] = []
+    _fieldnames: list[str] = []
+    _record_class: type = FileRecord
 
     def __init__(self, path: Path):
         self.path = path
-        self._records: dict[str, FileRecord] = {}
-        self.params: dict = {}   # global params parsed from / written to the comment header
+        self._records: dict[str, Any] = {}
+        self.params: dict = {}
 
     def load(self) -> None:
-        """Load existing progress from CSV (no-op if the file does not exist).
-
-        Populates self.params from comment lines and self._records from CSV rows.
-        """
+        """Load existing progress from CSV (no-op if the file does not exist)."""
         if not self.path.exists():
             return
 
@@ -108,28 +161,73 @@ class ProgressLog:
             else:
                 data_lines.append(line)
 
-        # Parse params from comment header
-        rules: list[str] = []
         for line in comment_lines:
-            body = line[1:].strip()          # strip leading '#'
+            body = line[1:].strip()
             key, _, value = body.partition(':')
             key = key.strip()
             value = value.strip()
             if not key:
                 continue
-            if key == 'rule':
-                rules.append(value)
-            elif key in PARAM_KEYS or key in ('started', 'last_run'):
-                self.params[key] = value
-        if rules:
-            self.params['rules'] = rules
+            self._load_comment_param(key, value)
 
-        # Parse CSV rows (skip blank lines that may follow comments)
         reader = csv.DictReader(io.StringIO(''.join(data_lines)))
         for row in reader:
-            kwargs = {k: row.get(k, '') for k in FIELDNAMES}
-            rec = FileRecord(**kwargs)
+            kwargs = {k: row.get(k, '') for k in self._fieldnames}
+            rec = self._record_class(**kwargs)
             self._records[rec.source] = rec
+
+    def _load_comment_param(self, key: str, value: str) -> None:
+        """Store a key/value from a comment header line. Override for special cases."""
+        if key in self._param_keys or key in ('started', 'last_run'):
+            self.params[key] = value
+
+    def write_initial(self) -> None:
+        """Write the full log once after all records have been registered."""
+        self._write()
+
+    def _write(self) -> None:
+        """Write comment header + CSV to a .tmp file, then atomically replace."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.parent / (self.path.name + '.tmp')
+        with tmp.open('w', newline='', encoding='utf-8') as f:
+            f.write(f'# {self._title}\n')
+            for key in self._param_keys:
+                f.write(f'# {key}: {self.params.get(key, "")}\n')
+            self._write_extra_params(f)
+            f.write(f'# started: {self.params.get("started", _now())}\n')
+            f.write(f'# last_run: {_now()}\n')
+            writer = csv.DictWriter(f, fieldnames=self._fieldnames)
+            writer.writeheader()
+            for rec in self._records.values():
+                writer.writerow({k: getattr(rec, k) for k in self._fieldnames})
+        os.replace(tmp, self.path)
+
+    def _write_extra_params(self, _f) -> None:
+        """Hook for subclasses to write additional comment-header lines."""
+        pass
+
+# ---------------------------------------------------------------------------
+# ProgressLog
+# ---------------------------------------------------------------------------
+
+
+class ProgressLog(_BaseProgressLog):
+    """Human-readable CSV progress tracker for convert_cines.py."""
+
+    _title = 'convert_cines progress log'
+    _param_keys = PARAM_KEYS
+    _fieldnames = FIELDNAMES
+    _record_class = FileRecord
+
+    def _load_comment_param(self, key: str, value: str) -> None:
+        if key == 'rule':
+            self.params.setdefault('rules', []).append(value)
+        else:
+            super()._load_comment_param(key, value)
+
+    def _write_extra_params(self, f) -> None:
+        for rule in self.params.get('rules', []):
+            f.write(f'# rule: {rule}\n')
 
     def set_params(self, args) -> None:
         """Record all conversion parameters from args into self.params.
@@ -138,8 +236,8 @@ class ProgressLog:
         """
         started = self.params.get('started') or _now()
         self.params.update({
-            'source_dir': str(args.source_dir),
-            'output_dir': str(args.output_dir) if args.output_dir else '',
+            'source_dir': str(os.path.abspath(args.source_dir)),
+            'output_dir': str(os.path.abspath(args.output_dir)) if args.output_dir else '',
             'ext': args.ext,
             'suffix': args.suffix,
             'crf': str(args.crf),
@@ -303,29 +401,79 @@ class ProgressLog:
         rec.updated = _now()
         self._write()
 
-    def write_initial(self) -> None:
-        """Write the full log once after all files have been registered.
+# ---------------------------------------------------------------------------
+# PairProgressLog
+# ---------------------------------------------------------------------------
 
-        Subsequent writes happen automatically via update().
-        """
+
+class PairProgressLog(_BaseProgressLog):
+    """Progress log for find_matched_cine_mp4.py — tracks pairs of video files."""
+
+    _title = 'find_matched_cine_mp4 progress log'
+    _param_keys = PAIR_PARAM_KEYS
+    _fieldnames = PAIR_FIELDNAMES
+    _record_class = PairRecord
+
+    def set_params(self, args) -> None:
+        """Record run parameters from args into self.params."""
+        started = self.params.get('started') or _now()
+        self.params.update({
+            'source_dir': str(args.source_dir),
+            'ext': args.ext,
+            'threshold': str(args.threshold),
+            'frames': str(args.frames),
+            'no_metadata': str(args.no_metadata),
+            'started': started,
+        })
+
+    def check_source_match(self, source_dir: Path) -> bool:
+        """Return True if stored source_dir matches the given value."""
+        return str(source_dir.absolute()) == os.path.abspath(self.params.get('source_dir', ''))
+
+    def add_pair(self, file_a: Path, file_b: Path) -> str:
+        """Register a pair if not already present. Returns current status."""
+        key = str(file_a)
+        if key in self._records:
+            return self._records[key].status
+        rec = PairRecord(
+            source=str(file_a),
+            output=str(file_b),
+            status='queued',
+            updated=_now(),
+        )
+        self._records[key] = rec
+        return 'queued'
+
+    def get(self, file_a: Path) -> PairRecord | None:
+        return self._records.get(str(file_a))
+
+    def update(
+        self,
+        file_a: Path,
+        status: str,
+        *,
+        corr_avg: float | None = None,
+        corr_min: float | None = None,
+        error: str = '',
+    ) -> None:
+        """Update a pair's status and write the log atomically."""
+        key = str(file_a)
+        rec = self._records.get(key)
+        if rec is None:
+            return
+        rec.status = status
+        if corr_avg is not None:
+            rec.corr_avg = _fmt_float(corr_avg, 4)
+        if corr_min is not None:
+            rec.corr_min = _fmt_float(corr_min, 4)
+        rec.error = error
+        rec.updated = _now()
         self._write()
 
-    def _write(self) -> None:
-        """Write comment header + CSV to a .tmp file, then atomically replace the real file."""
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.parent / (self.path.name + '.tmp')
-        with tmp.open('w', newline='', encoding='utf-8') as f:
-            # Comment header with stored parameters
-            f.write('# convert_cines progress log\n')
-            for key in PARAM_KEYS:
-                f.write(f'# {key}: {self.params.get(key, "")}\n')
-            for rule in self.params.get('rules', []):
-                f.write(f'# rule: {rule}\n')
-            f.write(f'# started: {self.params.get("started", _now())}\n')
-            f.write(f'# last_run: {_now()}\n')
-            # CSV rows
-            writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
-            writer.writeheader()
-            for rec in self._records.values():
-                writer.writerow({k: getattr(rec, k) for k in FIELDNAMES})
-        os.replace(tmp, self.path)
+    def passed_pairs(self) -> list[tuple[Path, Path]]:
+        """Return all pairs with status 'passed' as (file_a, file_b) tuples."""
+        return [
+            (Path(rec.source), Path(rec.output))
+            for rec in self._records.values()
+            if rec.status == 'passed'
+        ]

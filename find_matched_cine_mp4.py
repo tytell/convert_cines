@@ -33,6 +33,7 @@ from pycine.file import read_header
 import numpy as np
 
 from check_conversion import CheckResult, FrameResult, _extract_gray_png, _get_duration, _timestamps
+from progress_log import PairProgressLog, PAIR_TERMINAL_STATUSES
 
 DEFAULT_MATCH_THRESHOLD = 0.99
 DEFAULT_FRAMES = 5
@@ -416,6 +417,17 @@ def main():
                              'default: remove_originals next to source_dir)')
     parser.add_argument('--no-metadata', action='store_true',
                         help='Skip XML metadata extraction/copy for CINE files')
+    parser.add_argument('--progress-file', type=Path, default=None, metavar='PATH',
+                        help='Path for the progress CSV (default: find_matched_progress.csv '
+                             'inside source_dir). Tracks pair status so interrupted runs can '
+                             'be resumed.')
+    parser.add_argument('--no-progress', action='store_true',
+                        help='Disable progress tracking entirely (no CSV file).')
+    parser.add_argument('--continue', dest='continue_run', action='store_true',
+                        help='Resume a previous run: skip pairs already passed or failed. '
+                             'Validates that source_dir matches the stored progress file.')
+    parser.add_argument('--restart', action='store_true',
+                        help='Clear the progress file and start fresh.')
     parser.add_argument('-n', '--dry-run', action='store_true',
                         help='List matches without running checks or writing scripts')
     parser.add_argument('-v', '--verbose', action='store_true',
@@ -434,6 +446,54 @@ def main():
 
     script_base = args.remove_script or (source_dir.parent / 'remove_originals')
 
+    # -------------------------------------------------------------------------
+    # Progress log setup
+    # -------------------------------------------------------------------------
+    progress_enabled = not args.no_progress and not args.dry_run
+    log: PairProgressLog | None = None
+
+    if args.progress_file is None:
+        args.progress_file = source_dir / 'find_matched_progress.csv'
+
+    if args.continue_run:
+        if not args.progress_file.exists():
+            print(f'Error: --continue: progress file not found: {args.progress_file}',
+                  file=sys.stderr)
+            sys.exit(1)
+
+    if args.restart and args.progress_file.exists():
+        args.progress_file.unlink()
+        print(f'Cleared progress file: {args.progress_file}')
+
+    if progress_enabled:
+        log = PairProgressLog(args.progress_file)
+        log.load()
+
+        if log.params.get('source_dir') and not log.check_source_match(source_dir):
+            stored = log.params['source_dir']
+            print(
+                f'Error: progress file {args.progress_file} was created for a different '
+                f'directory:\n  stored: {stored}\n  current: {source_dir}\n'
+                f'Use --restart to clear and start fresh, or --progress-file to specify '
+                f'a different progress file.',
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        if args.continue_run:
+            started = log.params.get('started', 'unknown')
+            print(f'Resuming from {args.progress_file}  (started {started})')
+            stored_threshold = log.params.get('threshold', '')
+            if stored_threshold and stored_threshold != str(args.threshold):
+                print(f'  warning: threshold changed from {stored_threshold} to '
+                      f'{args.threshold} — stored results used the old threshold',
+                      file=sys.stderr)
+
+        log.set_params(args)
+
+    # -------------------------------------------------------------------------
+    # File discovery
+    # -------------------------------------------------------------------------
     files = find_video_files(source_dir, exts)
     groups = group_by_stem(files)
     pairs: list[tuple[Path, Path]] = []
@@ -446,8 +506,17 @@ def main():
         print('No matched pairs found.')
         return
 
+    # Register all pairs in the log before processing
+    if log is not None:
+        for file_a, file_b in pairs:
+            log.add_pair(file_a, file_b)
+        log.write_initial()
+
+    # -------------------------------------------------------------------------
+    # Main loop
+    # -------------------------------------------------------------------------
     to_remove: list[Path] = []
-    n_passed = n_failed = n_error = 0
+    n_passed = n_failed = n_error = n_skipped = 0
 
     for idx, (file_a, file_b) in enumerate(pairs):
         size_a = file_a.stat().st_size
@@ -459,6 +528,14 @@ def main():
         label = str(rel_a.parent / file_a.stem) if rel_a.parent != Path('.') else file_a.stem
         print(f'[{idx+1}/{len(pairs)}] {label}: '
               f'{file_a.suffix} ({_fmt_size(size_a)})  vs  {file_b.suffix} ({_fmt_size(size_b)})')
+
+        record = log.get(file_a) if log else None
+        status = record.status if record else 'queued'
+
+        if status in PAIR_TERMINAL_STATUSES:
+            print(f'  skipping ({status})')
+            n_skipped += 1
+            continue
 
         if args.dry_run:
             continue
@@ -485,7 +562,13 @@ def main():
 
         if result.error:
             n_error += 1
+            if log:
+                log.update(file_a, 'error', error=result.error)
             continue
+
+        corrs = [f.psnr for f in result.frames]
+        avg_corr = sum(corrs) / len(corrs)
+        min_corr = min(corrs)
 
         if result.passed:
             n_passed += 1
@@ -503,14 +586,31 @@ def main():
 
             to_remove.append(larger)
             print(f'  → {larger.suffix} queued for removal')
+            if log:
+                log.update(file_a, 'passed', corr_avg=avg_corr, corr_min=min_corr)
         else:
             n_failed += 1
+            if log:
+                log.update(file_a, 'failed', corr_avg=avg_corr, corr_min=min_corr)
 
     if args.dry_run:
         print(f'\nDry run: {len(pairs)} pair(s) found. Run without -n to check.')
         return
 
+    # Rebuild removal list from log so that pairs passed in prior interrupted
+    # runs are also included in the removal script.
+    if log is not None:
+        to_remove = []
+        for fa, fb in log.passed_pairs():
+            size_a = fa.stat().st_size if fa.exists() else 0
+            size_b = fb.stat().st_size if fb.exists() else 0
+            larger = fa if size_a >= size_b else fb
+            if larger.exists():
+                to_remove.append(larger)
+
     print(f'\nDone: {n_passed} passed, {n_failed} failed', end='')
+    if n_skipped:
+        print(f', {n_skipped} skipped', end='')
     if n_error:
         print(f', {n_error} error(s)', end='')
     print(f'.  Originals queued for removal: {len(to_remove)}.')
