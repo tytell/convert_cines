@@ -6,6 +6,7 @@ via PSNR, preserve CINE metadata, and generate a removal script for the larger f
 from __future__ import annotations
 
 import argparse
+import ctypes
 import math
 import os
 import shutil
@@ -157,6 +158,97 @@ def _sub(parent: ET.Element, tag: str, text: str) -> ET.Element:
     return el
 
 
+# bool32_t is typedef'd as c_int, so these cannot be inferred from the ctypes type alone
+_BOOL_FIELDS = frozenset({
+    'bFlipH', 'bFlipV', 'bEnableColor', 'bStampTime', 'RisingEdge',
+    'LongReady', 'ShutterOff', 'bMetaWB', 'EnableMatrices', 'EnableCrop',
+    'EnableResample',
+})
+
+# SETUP struct fields whose Phantom XML name differs from the ctypes field name
+_SETUP_NAME_MAP = {
+    'FrameRate': 'FrameRateDouble',
+    'cmUser':    'fUserMatrix',
+}
+
+# uint16_t fields that store two ASCII chars rather than a numeric value
+_CHAR_PAIR_FIELDS = frozenset({'Type', 'Mark'})
+
+
+def _val_to_xml(
+    parent: ET.Element,
+    tag: str,
+    val,
+    *,
+    bool_fields: frozenset = frozenset(),
+) -> None:
+    """Serialize a ctypes field value to an XML child element under parent.
+
+    Dispatch is based on the Python type of val:
+      bytes           → decode as null-terminated latin-1 string (c_char * N)
+      ctypes.Structure → recurse into _struct_to_xml
+      ctypes.Array    → indexed children; element type determines formatting
+      float           → 6 decimal places
+      int (in bool_fields) → true/false
+      int (in _CHAR_PAIR_FIELDS) → decode uint16_t as 2 ASCII chars
+      int             → str()
+    """
+    if tag in _CHAR_PAIR_FIELDS and isinstance(val, int):
+        _sub(parent, tag, struct.pack('<H', val).decode('ascii', errors='replace'))
+    elif isinstance(val, bytes):
+        _sub(parent, tag, _decode_cstr(val))
+    elif isinstance(val, ctypes.Structure):
+        el = ET.SubElement(parent, tag)
+        _struct_to_xml(el, val, bool_fields=bool_fields)
+    elif isinstance(val, ctypes.Array):
+        el = ET.SubElement(parent, tag)
+        if not len(val):
+            return
+        first = val[0]
+        if isinstance(first, bytes):
+            # 2D char array (c_char * N * M): indexed children with decoded strings
+            for i, item in enumerate(val):
+                child = ET.SubElement(el, tag)
+                child.set('no', str(i))
+                child.text = _decode_cstr(item)
+        elif isinstance(first, ctypes.Structure):
+            for i, item in enumerate(val):
+                child = ET.SubElement(el, tag)
+                child.set('no', str(i))
+                _struct_to_xml(child, item, bool_fields=bool_fields)
+        elif isinstance(first, float):
+            for i, item in enumerate(val):
+                child = ET.SubElement(el, tag)
+                child.set('no', str(i))
+                child.text = f'{item:.6f}'
+        else:
+            for i, item in enumerate(val):
+                child = ET.SubElement(el, tag)
+                child.set('no', str(i))
+                child.text = str(item)
+    elif isinstance(val, float):
+        _sub(parent, tag, f'{val:.6f}')
+    elif tag in bool_fields:
+        _sub(parent, tag, _bool_str(val))
+    else:
+        _sub(parent, tag, str(val))
+
+
+def _struct_to_xml(
+    parent: ET.Element,
+    obj,
+    *,
+    bool_fields: frozenset = frozenset(),
+    name_map: dict | None = None,
+) -> None:
+    """Serialize all fields of a ctypes Structure to XML children of parent."""
+    for field in obj._fields_:
+        fname = field[0]   # (name, type) or (name, type, bitsize) for bitfields
+        xml_name = (name_map or {}).get(fname, fname)
+        val = getattr(obj, fname)
+        _val_to_xml(parent, xml_name, val, bool_fields=bool_fields)
+
+
 def extract_cine_metadata(cine_path: Path) -> dict:
     from pycine.file import read_header
     return read_header(str(cine_path))
@@ -169,187 +261,25 @@ def write_metadata_xml(header: dict, out_path: Path) -> None:
 
     root = ET.Element('chd')
 
-    # CineFileHeader
+    # CineFileHeader: auto except TriggerTime which needs Date/Time sub-elements
     cfh_el = ET.SubElement(root, 'CineFileHeader')
-    _sub(cfh_el, 'Type', 'CI')
-    _sub(cfh_el, 'Compression', str(cfh.Compression))
-    _sub(cfh_el, 'Version', str(cfh.Version))
-    _sub(cfh_el, 'FirstMovieImage', str(cfh.FirstMovieImage))
-    _sub(cfh_el, 'TotalImageCount', str(cfh.TotalImageCount))
-    _sub(cfh_el, 'FirstImageNo', str(cfh.FirstImageNo))
-    _sub(cfh_el, 'ImageCount', str(cfh.ImageCount))
-    tt_el = ET.SubElement(cfh_el, 'TriggerTime')
-    date_str, time_str = _trigger_time_strs(cfh.TriggerTime, s.RecordingTimeZone)
-    _sub(tt_el, 'Date', date_str)
-    _sub(tt_el, 'Time', time_str)
+    for field in cfh._fields_:
+        fname = field[0]
+        if fname == 'TriggerTime':
+            tt_el = ET.SubElement(cfh_el, 'TriggerTime')
+            date_str, time_str = _trigger_time_strs(cfh.TriggerTime, s.RecordingTimeZone)
+            _sub(tt_el, 'Date', date_str)
+            _sub(tt_el, 'Time', time_str)
+        else:
+            _val_to_xml(cfh_el, fname, getattr(cfh, fname),
+                        bool_fields=frozenset())
 
-    # BitmapInfoHeader
+    # BitmapInfoHeader and CameraSetup: fully automatic
     bih_el = ET.SubElement(root, 'BitmapInfoHeader')
-    for field, _ in bih._fields_:
-        _sub(bih_el, field, str(getattr(bih, field)))
+    _struct_to_xml(bih_el, bih)
 
-    # CameraSetup
-    cs = ET.SubElement(root, 'CameraSetup')
-
-    def isub(tag: str, val) -> None:       _sub(cs, tag, str(int(val)))
-    def fsub(tag: str, val) -> None:       _sub(cs, tag, f'{float(val):.6f}')
-    def bsub(tag: str, val) -> None:       _sub(cs, tag, _bool_str(val))
-    def ssub(tag: str, val: str) -> None:  _sub(cs, tag, val)
-
-    isub('TrigFrame', s.TrigFrame)
-    ssub('Mark', struct.pack('<H', s.Mark).decode('ascii', errors='replace'))
-    isub('Length', s.Length)
-    isub('SigOption', s.SigOption)
-    isub('BinChannels', s.BinChannels)
-    isub('SamplesPerImage', s.SamplesPerImage)
-    ssub('BinName', '')
-    isub('AnaOption', s.AnaOption)
-    isub('AnaChannels', s.AnaChannels)
-    isub('AnaBoard', s.AnaBoard)
-    ssub('ChOption', '')
-    ssub('AnaGain', '')
-    ssub('AnaUnit', '')
-    ssub('AnaName', '')
-    isub('lFirstImage', s.lFirstImage)
-    isub('dwImageCount', s.dwImageCount)
-    isub('nQFactor', s.nQFactor)
-    isub('wCineFileType', s.wCineFileType)
-    szcp_el = ET.SubElement(cs, 'szCinePath')
-    for i in range(4):
-        e = ET.SubElement(szcp_el, 'szCinePath')
-        e.set('no', str(i))
-        e.text = ''
-    isub('ImWidth', s.ImWidth)
-    isub('ImHeight', s.ImHeight)
-    isub('Serial', s.Serial)
-    isub('Saturation', s.Saturation)
-    isub('AutoExposure', s.AutoExposure)
-    bsub('bFlipH', s.bFlipH)
-    bsub('bFlipV', s.bFlipV)
-    isub('Grid', s.Grid)
-    isub('FrameRateDouble', s.FrameRate)
-    isub('PostTrigger', s.PostTrigger)
-    bsub('bEnableColor', s.bEnableColor)
-    isub('CameraVersion', s.CameraVersion)
-    isub('FirmwareVersion', s.FirmwareVersion)
-    isub('SoftwareVersion', s.SoftwareVersion)
-    isub('RecordingTimeZone', s.RecordingTimeZone)
-    isub('CFA', s.CFA)
-    isub('Bright', s.Bright)
-    isub('Contrast', s.Contrast)
-    isub('Gamma', s.Gamma)
-    isub('AutoExpLevel', s.AutoExpLevel)
-    isub('AutoExpSpeed', s.AutoExpSpeed)
-    aer = ET.SubElement(cs, 'AutoExpRect')
-    for field in ('left', 'right', 'top', 'bottom'):
-        _sub(aer, field, str(getattr(s.AutoExpRect, field)))
-    wbg_el = ET.SubElement(cs, 'WBGain')
-    for i in range(4):
-        e = ET.SubElement(wbg_el, 'WBGain')
-        e.set('no', str(i))
-        _sub(e, 'R', f'{s.WBGain[i].R:.6f}')
-        _sub(e, 'B', f'{s.WBGain[i].B:.6f}')
-    isub('Rotate', s.Rotate)
-    wbv = ET.SubElement(cs, 'WBView')
-    _sub(wbv, 'R', f'{s.WBView.R:.6f}')
-    _sub(wbv, 'B', f'{s.WBView.B:.6f}')
-    isub('RealBPP', s.RealBPP)
-    isub('Conv8Min', s.Conv8Min)
-    isub('Conv8Max', s.Conv8Max)
-    isub('FilterCode', s.FilterCode)
-    isub('FilterParam', s.FilterParam)
-    uf_el = ET.SubElement(cs, 'UF')
-    _sub(uf_el, 'dim', str(s.UF.dim))
-    _sub(uf_el, 'shifts', str(s.UF.shifts))
-    _sub(uf_el, 'bias', str(s.UF.bias))
-    _sub(uf_el, 'Coef', '')
-    isub('BlackCalSVer', s.BlackCalSVer)
-    isub('WhiteCalSVer', s.WhiteCalSVer)
-    isub('GrayCalSVer', s.GrayCalSVer)
-    bsub('bStampTime', s.bStampTime)
-    isub('SoundDest', s.SoundDest)
-    isub('FRPSteps', s.FRPSteps)
-    ssub('FRPImgNr', '')
-    ssub('FRPRate', '')
-    ssub('FRPExp', '')
-    isub('MCCnt', s.MCCnt)
-    mcp_el = ET.SubElement(cs, 'MCPercent')
-    for i in range(64):
-        e = ET.SubElement(mcp_el, 'MCPercent')
-        e.set('no', str(i))
-        e.text = f'{s.MCPercent[i]:.6f}'
-    isub('CICalib', s.CICalib)
-    isub('CalibWidth', s.CalibWidth)
-    isub('CalibHeight', s.CalibHeight)
-    isub('CalibRate', s.CalibRate)
-    isub('CalibExp', s.CalibExp)
-    isub('CalibEDR', s.CalibEDR)
-    isub('CalibTemp', s.CalibTemp)
-    hs_el = ET.SubElement(cs, 'HeadSerial')
-    for i in range(4):
-        e = ET.SubElement(hs_el, 'HeadSerial')
-        e.set('no', str(i))
-        e.text = str(s.HeadSerial[i])
-    isub('RangeCode', s.RangeCode)
-    isub('RangeSize', s.RangeSize)
-    isub('Decimation', s.Decimation)
-    isub('MasterSerial', s.MasterSerial)
-    isub('Sensor', s.Sensor)
-    isub('ShutterNs', s.ShutterNs)
-    isub('EDRShutterNs', s.EDRShutterNs)
-    isub('FrameDelayNs', s.FrameDelayNs)
-    isub('ImPosXAcq', s.ImPosXAcq)
-    isub('ImPosYAcq', s.ImPosYAcq)
-    isub('ImWidthAcq', s.ImWidthAcq)
-    isub('ImHeightAcq', s.ImHeightAcq)
-    ssub('Description', _decode_cstr(bytes(s.Description)))
-    bsub('RisingEdge', s.RisingEdge)
-    isub('FilterTime', s.FilterTime)
-    bsub('LongReady', s.LongReady)
-    bsub('ShutterOff', s.ShutterOff)
-    bsub('bMetaWB', s.bMetaWB)
-    isub('Hue', s.Hue)
-    isub('BlackLevel', s.BlackLevel)
-    isub('WhiteLevel', s.WhiteLevel)
-    ssub('LensDescription', _decode_cstr(bytes(s.LensDescription)))
-    fsub('LensAperture', s.LensAperture)
-    fsub('LensFocusDistance', s.LensFocusDistance)
-    fsub('LensFocalLength', s.LensFocalLength)
-    fsub('fOffset', s.fOffset)
-    fsub('fGain', s.fGain)
-    fsub('fSaturation', s.fSaturation)
-    fsub('fHue', s.fHue)
-    fsub('fGamma', s.fGamma)
-    fsub('fGammaR', s.fGammaR)
-    fsub('fGammaB', s.fGammaB)
-    fsub('fFlare', s.fFlare)
-    fsub('fPedestalR', s.fPedestalR)
-    fsub('fPedestalG', s.fPedestalG)
-    fsub('fPedestalB', s.fPedestalB)
-    fsub('fChroma', s.fChroma)
-    ssub('ToneLabel', _decode_cstr(bytes(s.ToneLabel)))
-    isub('TonePoints', s.TonePoints)
-    ssub('fTone', '')
-    ssub('UserMatrixLabel', _decode_cstr(bytes(s.UserMatrixLabel)))
-    bsub('EnableMatrices', s.EnableMatrices)
-    um_el = ET.SubElement(cs, 'fUserMatrix')
-    for i in range(9):
-        e = ET.SubElement(um_el, 'fUserMatrix')
-        e.set('no', str(i))
-        e.text = f'{s.cmUser[i]:.6f}'
-    bsub('EnableCrop', s.EnableCrop)
-    cr_el = ET.SubElement(cs, 'CropRect')
-    for field in ('left', 'right', 'top', 'bottom'):
-        _sub(cr_el, field, str(getattr(s.CropRect, field)))
-    bsub('EnableResample', s.EnableResample)
-    isub('ResampleWidth', s.ResampleWidth)
-    isub('ResampleHeight', s.ResampleHeight)
-    fsub('fGain16_8', s.fGain16_8)
-    frps_el = ET.SubElement(cs, 'FRPShape')
-    for i in range(16):
-        e = ET.SubElement(frps_el, 'FRPShape')
-        e.set('no', str(i))
-        e.text = str(s.FRPShape[i])
+    cs_el = ET.SubElement(root, 'CameraSetup')
+    _struct_to_xml(cs_el, s, bool_fields=_BOOL_FIELDS, name_map=_SETUP_NAME_MAP)
 
     xml_body = ET.tostring(root, encoding='unicode')
     with out_path.open('w', encoding='utf-8') as f:
@@ -391,7 +321,7 @@ def write_removal_script(to_remove: list[Path], script_base: Path) -> tuple[Path
         f.write('# Auto-generated: video files with a smaller matched copy that passed PSNR check\n')
         f.write('# Review this list, then run: bash remove_originals.sh\n\n')
         for p in to_remove:
-            f.write(f'rm {p}\n')
+            f.write(f'rm "{p}"\n')
     sh_path.chmod(sh_path.stat().st_mode | 0o111)
 
     with bat_path.open('w', newline='\r\n') as f:
