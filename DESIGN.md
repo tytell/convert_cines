@@ -671,3 +671,128 @@ def main(): ...
 ```
 
 `check_pair` imports `_extract_gray_png`, `_get_duration`, `_timestamps`, and `_parse_psnr_y` from `check_conversion` directly; no new PSNR logic is needed. `extract_cine_metadata` and `write_metadata_xml` use only `pycine` and `xml.etree.ElementTree` (stdlib).
+
+---
+
+## TIFF Frame Extraction (`--tiff-dir`)
+
+Extract individual 16-bit grayscale TIFF files from each source cine alongside (or instead of) MP4 conversion. Intended for downstream analysis workflows that require uncompressed frames.
+
+TIFFs are always extracted raw — no enhancement filters are applied. No PSNR or quality check is performed on TIFF output.
+
+### New flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--tiff-dir DIR` | _(none)_ | Output root for extracted TIFFs. Enables TIFF extraction mode. Mirrors source directory structure. |
+| `--tiff-count N` | `all` | Frames to extract per file. Integer for N evenly-distributed anchor frames; `all` (default) for every frame. |
+| `--tiff-every M` | _(none)_ | Extract one frame (or one pair) every M source frames. Mutually exclusive with `--tiff-count`. |
+| `--tiff-pair-sep N` | _(none)_ | If set, extract a second frame N frames after each anchor frame, producing consecutive pairs in the output. Must satisfy M > N when combined with `--tiff-every M`. |
+
+`--tiff-dir` is required to enable TIFF extraction; without it no TIFFs are produced. `--tiff-count` and `--tiff-every` are mutually exclusive.
+
+### Output structure
+
+Each source file gets its own subdirectory named after the source stem, written under `--tiff-dir` mirroring the source tree:
+
+```
+tiff_dir/
+  rel/path/to/
+    stem/
+      stem_000001.tiff   ← anchor frame
+      stem_000002.tiff   ← pair partner (N frames later), if --tiff-pair-sep set
+      stem_000003.tiff   ← next anchor
+      stem_000004.tiff   ← next pair partner
+      ...
+```
+
+Frame files are named `<stem>_<N>.tiff` where N is zero-padded to 4 digits. Output files are numbered sequentially regardless of source frame index; files always come in pairs when `--tiff-pair-sep` is set. Subdirectories are created with `mkdir -p`.
+
+### Frame selection
+
+All modes use a single ffmpeg pass with `-vf "select=...,format=gray16le" -vsync 0 -pix_fmt gray16le`.
+
+**All frames** (`--tiff-count all`, the default, no `--tiff-pair-sep`):
+
+```bash
+ffmpeg -i input.cine -vf "format=gray16le" -pix_fmt gray16le \
+  tiff_dir/rel/stem/stem_%04d.tiff
+```
+
+**Every Mth frame** (`--tiff-every M`, no `--tiff-pair-sep`):
+
+```
+select='not(mod(n,M))'
+```
+
+**Every Mth frame as pairs separated by N** (`--tiff-every M --tiff-pair-sep N`):
+
+```
+select='eq(mod(n,M),0)+eq(mod(n,M),N)'
+```
+
+For example, `--tiff-every 100 --tiff-pair-sep 3` selects source frames 0, 3, 100, 103, 200, 203, … and writes them as output files 000001, 000002, 000003, 000004, …
+
+**N evenly-distributed anchor frames** (`--tiff-count N`, no `--tiff-pair-sep`):
+
+1. Get total frame count via ffprobe (`nb_frames`; fall back to `duration × r_frame_rate` if absent).
+2. Compute 0-based anchor indices: `[round(i * (total - 1) / (N - 1)) for i in range(N)]` (always includes first and last; for N=1 use the middle frame).
+3. `select='eq(n,i0)+eq(n,i1)+...'`
+
+**N evenly-distributed pairs** (`--tiff-count N --tiff-pair-sep S`):
+
+Same anchor indices as above; each anchor `i` adds both `eq(n,i)` and `eq(n,i+S)` to the select expression. Produces 2N output files.
+
+### Pixel format
+
+Always write 16-bit little-endian grayscale TIFFs (`-pix_fmt gray16le`). No enhancement filters are ever applied; `format=gray16le` is the only filter (appended after any `select`).
+
+### Skip condition
+
+If the output subdirectory already exists and contains at least one `.tiff` file, extraction is skipped (prints `  tiffs: skipping (already extracted)`) unless `--overwrite` is set.
+
+### Integration with main loop
+
+TIFF extraction runs after a successful conversion (or for already-converted/skipped files), after any `--check` step. It always reads from the **source cine**, not the MP4. `--test-frames` has no effect on TIFF extraction.
+
+```python
+if args.tiff_dir is not None:
+    tiff_sub = tiff_output_dir(src, args.source_dir, args.tiff_dir)
+    extract_tiffs(src, tiff_sub, args)
+```
+
+### New helper `tiff_output_dir`
+
+```python
+def tiff_output_dir(src: Path, source_root: Path, tiff_dir: Path) -> Path:
+    rel = src.relative_to(source_root) if src.is_relative_to(source_root) else Path(src.name)
+    return tiff_dir / rel.parent / src.stem
+```
+
+### New function `extract_tiffs`
+
+Lives in `convert_cines.py`. Builds and runs a single ffmpeg command; returns `True` on success.
+
+```python
+def extract_tiffs(src: Path, out_dir: Path, args) -> bool: ...
+```
+
+Prints one summary line on completion:
+
+```
+  tiffs: 42 frames → tiff_dir/rel/stem/
+  tiffs: 84 frames (42 pairs) → tiff_dir/rel/stem/
+  tiffs: skipping (already extracted)
+  tiffs: ERROR  <message>
+```
+
+Verbose (`-v`) also prints the full ffmpeg command.
+
+### Argument validation
+
+Added to `main()` after argument parsing:
+
+- Error if both `--tiff-count` and `--tiff-every` are given.
+- Error if `--tiff-pair-sep` is given with `--tiff-every M` and sep >= M.
+- `--tiff-count` value must be a positive integer or the string `"all"` (parsed as `None` internally to mean all frames).
+- `--tiff-count`, `--tiff-every`, `--tiff-pair-sep` have no effect unless `--tiff-dir` is also set; warn but don't error.

@@ -75,6 +75,11 @@ def build_vf(max_intensity, contrast, gamma):
     return ",".join(parts) if parts else None
 
 
+def tiff_output_dir(src: Path, source_root: Path, tiff_dir: Path) -> Path:
+    rel = src.relative_to(source_root) if src.is_relative_to(source_root) else Path(src.name)
+    return tiff_dir / rel.parent / src.stem
+
+
 def output_path(src, source_root, output_dir, suffix=""):
     if output_dir is None:
         return src.parent / (src.stem + suffix + ".mp4")
@@ -148,6 +153,116 @@ def build_cmd(src, dst, args, max_intensity, contrast, gamma, *, force_overwrite
     return cmd
 
 
+def _tiff_count_type(val: str):
+    """argparse type for --tiff-count: accepts a positive integer or 'all'."""
+    if val.lower() == 'all':
+        return None
+    try:
+        n = int(val)
+        if n < 1:
+            raise argparse.ArgumentTypeError(
+                f"--tiff-count must be a positive integer or 'all', got: {val!r}"
+            )
+        return n
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"--tiff-count must be a positive integer or 'all', got: {val!r}"
+        )
+
+
+def _get_frame_count(src: Path) -> int:
+    """Return total video frame count via ffprobe."""
+    r = subprocess.run(
+        ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+         '-show_entries', 'stream=nb_frames',
+         '-of', 'default=noprint_wrappers=1:nokey=1', str(src)],
+        capture_output=True, text=True,
+    )
+    val = r.stdout.strip()
+    if r.returncode == 0 and val and val != 'N/A':
+        return int(val)
+    # Fallback: duration × frame_rate
+    r_fps = subprocess.run(
+        ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+         '-show_entries', 'stream=r_frame_rate',
+         '-of', 'default=noprint_wrappers=1:nokey=1', str(src)],
+        capture_output=True, text=True,
+    )
+    r_dur = subprocess.run(
+        ['ffprobe', '-v', 'error',
+         '-show_entries', 'format=duration',
+         '-of', 'default=noprint_wrappers=1:nokey=1', str(src)],
+        capture_output=True, text=True,
+    )
+    fps_str = r_fps.stdout.strip()
+    dur_str = r_dur.stdout.strip()
+    if fps_str and dur_str:
+        num, _, den = fps_str.partition('/')
+        fps = int(num) / (int(den) if den else 1)
+        return round(float(dur_str) * fps)
+    raise RuntimeError(f"Cannot determine frame count for {src}")
+
+
+def extract_tiffs(src: Path, out_dir: Path, args) -> bool:
+    """Extract raw 16-bit grayscale TIFFs from src into out_dir. Returns True on success."""
+    if not args.overwrite and out_dir.exists() and any(out_dir.glob('*.tiff')):
+        print("  tiffs: skipping (already extracted)")
+        return True
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_pattern = out_dir / f"{src.stem}_%04d.tiff"
+
+    pair_sep = args.tiff_pair_sep
+    select_expr = None
+
+    if args.tiff_every:
+        M = args.tiff_every
+        if pair_sep:
+            select_expr = f"eq(mod(n,{M}),0)+eq(mod(n,{M}),{pair_sep})"
+        else:
+            select_expr = f"not(mod(n,{M}))"
+    elif args.tiff_count is not None:
+        K = args.tiff_count
+        try:
+            total = _get_frame_count(src)
+        except (RuntimeError, ValueError) as e:
+            print(f"  tiffs: ERROR  {e}", file=sys.stderr)
+            return False
+        anchors = [total // 2] if K == 1 else [
+            round(i * (total - 1) / (K - 1)) for i in range(K)
+        ]
+        if pair_sep:
+            terms = [t for a in anchors for t in (f"eq(n,{a})", f"eq(n,{a + pair_sep})")]
+        else:
+            terms = [f"eq(n,{a})" for a in anchors]
+        select_expr = '+'.join(terms)
+
+    if select_expr:
+        vf = f"select='{select_expr}',format=gray16le"
+        cmd = ['ffmpeg', '-y', '-i', str(src),
+               '-vf', vf, '-vsync', '0', '-pix_fmt', 'gray16le', str(out_pattern)]
+    else:
+        cmd = ['ffmpeg', '-y', '-i', str(src),
+               '-vf', 'format=gray16le', '-pix_fmt', 'gray16le', str(out_pattern)]
+
+    if args.verbose:
+        print(f"  {' '.join(cmd)}")
+
+    result = subprocess.run(cmd, capture_output=not args.verbose)
+    if result.returncode != 0:
+        if not args.verbose:
+            print(result.stderr.decode(errors='replace'), end='', file=sys.stderr)
+        print(f"  tiffs: ERROR  ffmpeg exited with code {result.returncode}", file=sys.stderr)
+        return False
+
+    n_tiffs = len(list(out_dir.glob('*.tiff')))
+    if pair_sep:
+        print(f"  tiffs: {n_tiffs} frames ({n_tiffs // 2} pairs) → {out_dir}/")
+    else:
+        print(f"  tiffs: {n_tiffs} frames → {out_dir}/")
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Recursively convert video files to H.265 MP4 using ffmpeg."
@@ -206,6 +321,21 @@ def main():
     parser.add_argument("--keep-frames", action="store_true",
                         help="Save extracted check frames alongside the converted MP4 "
                              "(ignored if --check-dir is set)")
+    parser.add_argument("--tiff-dir", type=Path, default=None, metavar="DIR",
+                        help="Output root for extracted TIFFs (enables TIFF extraction). "
+                             "Mirrors source directory structure. Always writes raw 16-bit "
+                             "grayscale with no enhancement filters applied.")
+    parser.add_argument("--tiff-count", type=_tiff_count_type, default=None, metavar="N",
+                        help="Frames to extract per file: integer for N evenly-distributed "
+                             "frames, 'all' for every frame (default when --tiff-dir is set). "
+                             "Mutually exclusive with --tiff-every.")
+    parser.add_argument("--tiff-every", type=int, default=None, metavar="M",
+                        help="Extract one frame (or one pair) every M source frames. "
+                             "Mutually exclusive with --tiff-count.")
+    parser.add_argument("--tiff-pair-sep", type=int, default=None, metavar="N",
+                        help="Also extract a frame N source frames after each anchor, "
+                             "producing consecutive pairs in the output. "
+                             "Requires --tiff-every or --tiff-count N (not 'all').")
     parser.add_argument("--remove-cine", action="store_true",
                         help="After --check, write a shell script listing all CINE files that "
                              "passed, so you can review and run it to delete them.")
@@ -228,6 +358,28 @@ def main():
                              "regardless of prior status.")
 
     args = parser.parse_args()
+
+    # -------------------------------------------------------------------------
+    # TIFF extraction argument validation
+    # -------------------------------------------------------------------------
+    if args.tiff_dir is not None:
+        if args.tiff_count is not None and args.tiff_every is not None:
+            parser.error("--tiff-count and --tiff-every are mutually exclusive")
+        if args.tiff_pair_sep is not None:
+            if args.tiff_count is None and args.tiff_every is None:
+                parser.error(
+                    "--tiff-pair-sep requires --tiff-every M or --tiff-count N (not 'all')"
+                )
+            if args.tiff_every is not None and args.tiff_pair_sep >= args.tiff_every:
+                parser.error(
+                    f"--tiff-pair-sep ({args.tiff_pair_sep}) must be less than "
+                    f"--tiff-every ({args.tiff_every})"
+                )
+    else:
+        for flag in ('tiff_count', 'tiff_every', 'tiff_pair_sep'):
+            if getattr(args, flag) is not None:
+                print(f"Warning: --{flag.replace('_', '-')} has no effect without --tiff-dir",
+                      file=sys.stderr)
 
     # -------------------------------------------------------------------------
     # Progress file setup: resolve path, handle --continue / --restart
@@ -408,6 +560,8 @@ def main():
             if args.remove_cine and status == 'check_passed' and not is_first_in_dir:
                 cines_to_remove.append(src)
             skipped += 1
+            if args.tiff_dir is not None:
+                extract_tiffs(src, tiff_output_dir(src, args.source_dir, args.tiff_dir), args)
             continue
 
         # --- Conversion ---
@@ -490,6 +644,10 @@ def main():
                     check_min=min(psnrs) if psnrs else None,
                     error=r.error or '',
                 )
+
+        # --- TIFF extraction ---
+        if args.tiff_dir is not None:
+            extract_tiffs(src, tiff_output_dir(src, args.source_dir, args.tiff_dir), args)
 
     if not args.dry_run:
         summary = f"\nDone: {succeeded} succeeded, {skipped} skipped, {failed} failed."
