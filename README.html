@@ -1,0 +1,1194 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>README</title>
+  <style>
+
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <style type="text/css">body {
+max-width: 90%;
+width: 90%;
+margin: 0 auto;
+padding: 1em 0;
+}
+table {
+width: 100%;
+border-collapse: collapse;
+}
+th, td {
+padding: 0.4em 0.8em;
+text-align: left;
+}
+tbody tr:nth-child(odd) {
+background-color: #f0f0f0;
+}
+tbody tr:nth-child(even) {
+background-color: #ffffff;
+}
+@media (min-width: 1400px) {
+body {
+max-width: 1200px;
+}
+}
+</style>
+</head>
+<body>
+<h1 id="convert_cines">convert_cines</h1>
+<p>Recursively converts video files (default: <code>.cine</code>) to
+H.265 MP4 using ffmpeg. Supports brightness, contrast, and gamma
+adjustment, with per-file rules based on filename patterns, plus quality
+checking, resumable batch runs, and raw TIFF frame extraction.</p>
+<h2 id="table-of-contents">Table of Contents</h2>
+<ul>
+<li><a href="#install">Install</a></li>
+<li><a href="#requirements">Requirements</a></li>
+<li><a href="#convert_cinespy">convert_cines.py</a>
+<ul>
+<li><a href="#flag-reference">Flag reference</a></li>
+<li><a href="#basic-examples">Basic examples</a></li>
+<li><a href="#image-enhancement">Image enhancement</a></li>
+<li><a href="#encoding-options">Encoding options</a></li>
+<li><a href="#test-mode">Test mode</a></li>
+<li><a href="#dry-run">Dry run</a></li>
+<li><a href="#file-matching-enhancement-rules">File matching enhancement
+rules</a></li>
+<li><a href="#output-path-behaviour">Output path behaviour</a></li>
+<li><a href="#progress-tracking-and-resuming">Progress tracking and
+resuming</a></li>
+<li><a href="#quality-checks">Quality checks</a></li>
+<li><a href="#removing-verified-cine-files">Removing verified CINE
+files</a></li>
+<li><a href="#tiff-frame-extraction">TIFF frame extraction</a></li>
+</ul></li>
+<li><a href="#find_matched_cine_mp4py">find_matched_cine_mp4.py</a>
+<ul>
+<li><a href="#usage-examples">Usage examples</a></li>
+<li><a href="#metadata-preservation">Metadata preservation</a></li>
+<li><a href="#progress-tracking-and-resuming-1">Progress tracking and
+resuming</a></li>
+</ul></li>
+</ul>
+<hr />
+<h2 id="install">Install</h2>
+<div class="sourceCode" id="cb1"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> clone https://github.com/tytell/convert_cines.git</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="bu">cd</span> convert_cines</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> sync</span></code></pre></div>
+<p><a href="https://docs.astral.sh/uv/"><code>uv</code></a> creates a
+<code>.venv</code> and installs the dependencies pinned in
+<code>uv.lock</code>. The project pins Python 3.13
+(<code>.python-version</code>), which <code>uv</code> will download and
+manage automatically — no manual Python install needed.</p>
+<p><code>ffmpeg</code> is a separate system dependency and must be
+installed and on <code>PATH</code>
+(e.g. <code>brew install ffmpeg</code> on macOS,
+<code>apt install ffmpeg</code> on Debian/Ubuntu).</p>
+<p>Once set up, run either script with <code>uv run</code>:</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run convert_cines.py <span class="at">--help</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run find_matched_cine_mp4.py <span class="at">--help</span></span></code></pre></div>
+<p>Both scripts declare their own dependencies inline via a PEP 723
+script header (<code>convert_cines.py</code> needs <code>pyyaml</code>;
+<code>find_matched_cine_mp4.py</code> needs <code>numpy</code> and
+<code>pycine</code>), so <code>uv run convert_cines.py</code> /
+<code>uv run find_matched_cine_mp4.py</code> install what they need
+automatically on first use, even without <code>uv sync</code>.</p>
+<h2 id="requirements">Requirements</h2>
+<ul>
+<li>Python 3.12+, managed by <code>uv</code>
+(<code>.python-version</code> pins 3.13)</li>
+<li><code>ffmpeg</code> on PATH</li>
+<li><code>pyyaml</code> — used by <code>convert_cines.py</code> for
+<code>--config</code>; installed automatically by
+<code>uv run</code></li>
+<li><code>numpy</code>, <code>pycine</code> — used by
+<code>find_matched_cine_mp4.py</code> for the Spearman correlation check
+and CINE metadata extraction; installed automatically by
+<code>uv run</code></li>
+</ul>
+<hr />
+<h2 id="convert_cines.py">convert_cines.py</h2>
+<pre><code>uv run convert_cines.py source_dir [options]</code></pre>
+<h3 id="flag-reference">Flag reference</h3>
+<p>Flags are grouped below by the feature area they belong to, matching
+the sections that follow.</p>
+<h4 id="general">General</h4>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>source_dir</code></td>
+<td><em>(required unless <code>--continue</code> supplies it)</em></td>
+<td>Root directory to search</td>
+</tr>
+<tr>
+<td><code>--ext</code></td>
+<td><code>.cine</code></td>
+<td>File extension to find</td>
+</tr>
+<tr>
+<td><code>--output-dir</code></td>
+<td><em>(none)</em></td>
+<td>Output root directory (mirrors source structure). If omitted, MP4s
+are written next to source files</td>
+</tr>
+<tr>
+<td><code>--suffix</code></td>
+<td><code>&#39;&#39;</code></td>
+<td>Suffix appended to output filenames before the extension</td>
+</tr>
+<tr>
+<td><code>--overwrite</code></td>
+<td>off</td>
+<td>Overwrite existing output files</td>
+</tr>
+<tr>
+<td><code>-v</code>, <code>--verbose</code></td>
+<td>off</td>
+<td>Print detailed processing info</td>
+</tr>
+</tbody>
+</table>
+<h4 id="image-enhancement">Image enhancement</h4>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--max-intensity FLOAT</code></td>
+<td><code>1.0</code></td>
+<td>Brightness via <code>curves</code> filter, 0.0–1.0 (lower =
+brighter)</td>
+</tr>
+<tr>
+<td><code>--contrast FLOAT</code></td>
+<td><code>1.0</code></td>
+<td>Contrast via <code>eq</code> filter</td>
+</tr>
+<tr>
+<td><code>--gamma FLOAT</code></td>
+<td><code>1.0</code></td>
+<td>Gamma via <code>eq</code> filter</td>
+</tr>
+</tbody>
+</table>
+<h4 id="encoding-options">Encoding options</h4>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--crf N</code></td>
+<td><code>28</code></td>
+<td>H.265 quality (0–51; lower = better quality, larger file)</td>
+</tr>
+<tr>
+<td><code>--preset NAME</code></td>
+<td><code>slow</code></td>
+<td>x265 encoding speed preset (<code>ultrafast</code> …
+<code>veryslow</code>)</td>
+</tr>
+<tr>
+<td><code>--fps FLOAT</code></td>
+<td><em>(source rate)</em></td>
+<td>Output frame rate</td>
+</tr>
+</tbody>
+</table>
+<h4 id="test-mode">Test mode</h4>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--test-count N</code></td>
+<td><em>(none)</em></td>
+<td>Process N files spread evenly across the full set</td>
+</tr>
+<tr>
+<td><code>--test-files FILE ...</code></td>
+<td><em>(none)</em></td>
+<td>Process specific files (overrides <code>--test-count</code>)</td>
+</tr>
+<tr>
+<td><code>--test-frames N</code></td>
+<td><em>(none)</em></td>
+<td>Encode only the first N frames per file</td>
+</tr>
+</tbody>
+</table>
+<h4 id="dry-run">Dry run</h4>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-n</code>, <code>--dry-run</code></td>
+<td>off</td>
+<td>Print ffmpeg commands without running them</td>
+</tr>
+</tbody>
+</table>
+<h4 id="file-matching-enhancement-rules">File matching enhancement
+rules</h4>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--rule PATTERN:param=value,...</code></td>
+<td><em>(none)</em></td>
+<td>Per-file enhancement rule (repeatable)</td>
+</tr>
+<tr>
+<td><code>--config PATH</code></td>
+<td><em>(none)</em></td>
+<td>YAML file with a <code>rules:</code> list</td>
+</tr>
+</tbody>
+</table>
+<h4 id="progress-tracking-and-resuming">Progress tracking and
+resuming</h4>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--progress-file PATH</code></td>
+<td><code>&lt;source_dir&gt;/conversion_progress.csv</code></td>
+<td>Path for the progress CSV</td>
+</tr>
+<tr>
+<td><code>--no-progress</code></td>
+<td>off</td>
+<td>Disable progress tracking entirely (also implied by
+<code>--dry-run</code>)</td>
+</tr>
+<tr>
+<td><code>--continue</code></td>
+<td>off</td>
+<td>Resume a previous run using its stored parameters;
+<code>source_dir</code> may be omitted</td>
+</tr>
+<tr>
+<td><code>--restart</code></td>
+<td>off</td>
+<td>Clear the progress file and start fresh</td>
+</tr>
+</tbody>
+</table>
+<h4 id="quality-checks">Quality checks</h4>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--test-psnr</code></td>
+<td>off</td>
+<td>Run inline Y-channel PSNR check after each conversion (auto-enabled
+in test mode)</td>
+</tr>
+<tr>
+<td><code>--psnr-frames N</code></td>
+<td><code>5</code></td>
+<td>Frames sampled for the inline PSNR check</td>
+</tr>
+<tr>
+<td><code>--psnr-threshold T</code></td>
+<td><code>30.0</code></td>
+<td>Minimum PSNR in dB for the inline check to pass; also used as the
+threshold for <code>--check</code></td>
+</tr>
+<tr>
+<td><code>--check</code></td>
+<td>off</td>
+<td>Run a thorough R-channel PSNR check (extracts grayscale PNGs from
+source &amp; output); also runs for already-converted files</td>
+</tr>
+<tr>
+<td><code>--check-frames N</code></td>
+<td><code>5</code></td>
+<td>Frames sampled for <code>--check</code></td>
+</tr>
+<tr>
+<td><code>--check-dir DIR</code></td>
+<td><em>(temp, cleaned up)</em></td>
+<td>Save extracted check PNGs under DIR, mirroring the source tree</td>
+</tr>
+<tr>
+<td><code>--keep-frames</code></td>
+<td>off</td>
+<td>Save extracted check-frame PNGs next to the output MP4 (ignored if
+<code>--check-dir</code> is set)</td>
+</tr>
+</tbody>
+</table>
+<h4 id="removing-verified-cine-files">Removing verified CINE files</h4>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--remove-cine</code></td>
+<td>off</td>
+<td>After <code>--check</code>, write a removal script listing CINE
+files that passed</td>
+</tr>
+<tr>
+<td><code>--remove-script PATH</code></td>
+<td><code>remove_cines.sh</code>/<code>.bat</code> next to
+<code>source_dir</code>’s parent</td>
+<td>Base path for the generated removal scripts</td>
+</tr>
+</tbody>
+</table>
+<h4 id="tiff-frame-extraction">TIFF frame extraction</h4>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--tiff-dir DIR</code></td>
+<td><em>(none)</em></td>
+<td>Output root for extracted TIFFs; enables TIFF extraction, mirrors
+source tree</td>
+</tr>
+<tr>
+<td><code>--tiff-count N</code></td>
+<td>all frames</td>
+<td>N evenly-distributed frames, or <code>&#39;all&#39;</code>. Mutually
+exclusive with <code>--tiff-every</code></td>
+</tr>
+<tr>
+<td><code>--tiff-every M</code></td>
+<td><em>(none)</em></td>
+<td>Extract one frame (or pair) every M source frames. Mutually
+exclusive with <code>--tiff-count</code></td>
+</tr>
+<tr>
+<td><code>--tiff-pair-sep N</code></td>
+<td><em>(none)</em></td>
+<td>Also extract a frame N frames after each anchor, producing
+pairs</td>
+</tr>
+</tbody>
+</table>
+<h3 id="basic-examples">Basic examples</h3>
+<div class="sourceCode" id="cb4"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Convert all .cine files under current directory (output alongside source files)</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run convert_cines.py .</span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Convert to a separate output directory (mirrors source folder structure)</span></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run convert_cines.py rawdata/videos <span class="at">--output-dir</span> rawdata/videos/compressed</span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a><span class="co"># Overwrite files that have already been converted</span></span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run convert_cines.py rawdata/videos <span class="at">--output-dir</span> rawdata/videos/compressed <span class="at">--overwrite</span></span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a><span class="co"># Convert files with a different file extension</span></span>
+<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a><span class="co"># (for example, to convert H264 mp4s to H265)</span></span>
+<span id="cb4-12"><a href="#cb4-12" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run convert_cines.py rawdata/videos <span class="at">--ext</span> .mp4</span></code></pre></div>
+<h3 id="image-enhancement-1">Image enhancement</h3>
+<p>Three parameters control image enhancement. All default to no
+adjustment.</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Default</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--max-intensity FLOAT</code></td>
+<td><code>1.0</code></td>
+<td>Brightness via <code>curves</code> filter. Range 0.0–1.0; lower
+values brighten the image by mapping that input level to full output
+brightness.</td>
+</tr>
+<tr>
+<td><code>--contrast FLOAT</code></td>
+<td><code>1.0</code></td>
+<td>Contrast via <code>eq</code> filter. Values above 1.0 increase
+contrast.</td>
+</tr>
+<tr>
+<td><code>--gamma FLOAT</code></td>
+<td><code>1.0</code></td>
+<td>Gamma via <code>eq</code> filter. Values below 1.0 brighten
+midtones; above 1.0 darken them.</td>
+</tr>
+</tbody>
+</table>
+<div class="sourceCode" id="cb5"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Brighten dark footage</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run convert_cines.py . <span class="at">--max-intensity</span> 0.4</span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Adjust contrast and gamma</span></span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run convert_cines.py . <span class="at">--contrast</span> 1.3 <span class="at">--gamma</span> 0.8</span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a><span class="co"># Combine all three</span></span>
+<span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run convert_cines.py . <span class="at">--max-intensity</span> 0.5 <span class="at">--contrast</span> 1.2 <span class="at">--gamma</span> 0.85</span></code></pre></div>
+<h3 id="encoding-options-1">Encoding options</h3>
+<div class="sourceCode" id="cb6"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Higher quality (larger files)</span></span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run convert_cines.py . <span class="at">--crf</span> 22 <span class="at">--preset</span> slow</span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Set output frame rate (e.g. convert 1000fps high-speed footage to 30fps playback)</span></span>
+<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run convert_cines.py . <span class="at">--fps</span> 30</span></code></pre></div>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--crf N</code></td>
+<td><code>28</code></td>
+<td>H.265 quality (0–51; lower = better quality, larger file)</td>
+</tr>
+<tr>
+<td><code>--preset NAME</code></td>
+<td><code>slow</code></td>
+<td>x265 encoding speed preset (<code>ultrafast</code> …
+<code>veryslow</code>)</td>
+</tr>
+<tr>
+<td><code>--fps FLOAT</code></td>
+<td><em>(source rate)</em></td>
+<td>Output frame rate</td>
+</tr>
+<tr>
+<td><code>--overwrite</code></td>
+<td>off</td>
+<td>Overwrite existing output files (default: skip if output
+exists)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="test-mode-1">Test mode</h3>
+<p>Test mode lets you check enhancement settings on a small subset of
+files before committing to a full batch run. Test mode also auto-enables
+the inline PSNR check (see <a href="#quality-checks">Quality
+checks</a>).</p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Encode the first file found (first 50 frames only)</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run convert_cines.py . <span class="at">--test-frames</span> 50 <span class="at">--output-dir</span> preview</span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Encode 3 files spread evenly across the full set</span></span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run convert_cines.py . <span class="at">--test-count</span> 3 <span class="at">--output-dir</span> preview</span>
+<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a><span class="co"># Encode specific files</span></span>
+<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run convert_cines.py . <span class="at">--test-files</span> run1/shot3.cine run2/shot7.cine <span class="at">--output-dir</span> preview</span></code></pre></div>
+<h3 id="dry-run-1">Dry run</h3>
+<p>Print the ffmpeg commands that would be run, without executing
+them:</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run convert_cines.py . <span class="at">--output-dir</span> rawdata/videos/compressed <span class="at">-n</span></span></code></pre></div>
+<p>Progress tracking is automatically disabled during a dry run (no CSV
+is written).</p>
+<h3 id="file-matching-enhancement-rules-1">File matching enhancement
+rules</h3>
+<p>When different files in a batch need different enhancement settings,
+rules can map filename patterns to specific parameter values. Rules are
+checked in order; the first matching rule wins. Files that match no rule
+use the global <code>--max-intensity</code>, <code>--contrast</code>,
+and <code>--gamma</code> values.</p>
+<p>Patterns use shell-style wildcards (<code>*</code>, <code>?</code>)
+and are matched against the <strong>path relative to
+<code>source_dir</code></strong>.</p>
+<h4 id="from-the-command-line">From the command line</h4>
+<p>Use <code>--rule &quot;PATTERN:param=value,...&quot;</code> (repeatable).
+Command line rules take priority over config file rules.</p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="co"># One rule</span></span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run convert_cines.py . <span class="at">--rule</span> <span class="st">&quot;*night*:max_intensity=0.3&quot;</span></span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Multiple rules — checked in the order given</span></span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run convert_cines.py . <span class="dt">\</span></span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a>  <span class="at">--rule</span> <span class="st">&quot;calibration/*:max_intensity=0.8,contrast=0.9&quot;</span> <span class="dt">\</span></span>
+<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a>  <span class="at">--rule</span> <span class="st">&quot;*dark*:max_intensity=0.25,gamma=0.75&quot;</span> <span class="dt">\</span></span>
+<span id="cb9-8"><a href="#cb9-8" aria-hidden="true" tabindex="-1"></a>  <span class="at">--rule</span> <span class="st">&quot;*trial03*:max_intensity=1.0,contrast=0.7&quot;</span></span></code></pre></div>
+<h4 id="from-a-yaml-config-file">From a YAML config file</h4>
+<div class="sourceCode" id="cb10"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run convert_cines.py . <span class="at">--config</span> enhance.yaml</span></code></pre></div>
+<p>The config file contains a <code>rules:</code> list. Each entry
+requires a <code>pattern</code> key plus any combination of
+<code>max_intensity</code>, <code>contrast</code>, and
+<code>gamma</code>.</p>
+<div class="sourceCode" id="cb11"><pre class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="co"># enhance.yaml</span></span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a><span class="fu">rules</span><span class="kw">:</span></span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a><span class="co">  # Files shot in infrared — very dark, needs significant brightening</span></span>
+<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">pattern</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;*night*&quot;</span></span>
+<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">max_intensity</span><span class="kw">:</span><span class="at"> </span><span class="fl">0.25</span></span>
+<span id="cb11-7"><a href="#cb11-7" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">gamma</span><span class="kw">:</span><span class="at"> </span><span class="fl">0.75</span></span>
+<span id="cb11-8"><a href="#cb11-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-9"><a href="#cb11-9" aria-hidden="true" tabindex="-1"></a><span class="co">  # Calibration runs — slightly reduce intensity, lower contrast</span></span>
+<span id="cb11-10"><a href="#cb11-10" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">pattern</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;calibration/*&quot;</span></span>
+<span id="cb11-11"><a href="#cb11-11" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">max_intensity</span><span class="kw">:</span><span class="at"> </span><span class="fl">0.8</span></span>
+<span id="cb11-12"><a href="#cb11-12" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">contrast</span><span class="kw">:</span><span class="at"> </span><span class="fl">0.9</span></span>
+<span id="cb11-13"><a href="#cb11-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-14"><a href="#cb11-14" aria-hidden="true" tabindex="-1"></a><span class="co">  # Specific experiment subfolder with overlit conditions</span></span>
+<span id="cb11-15"><a href="#cb11-15" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="kw">-</span><span class="at"> </span><span class="fu">pattern</span><span class="kw">:</span><span class="at"> </span><span class="st">&quot;2026-03-*/*&quot;</span></span>
+<span id="cb11-16"><a href="#cb11-16" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">max_intensity</span><span class="kw">:</span><span class="at"> </span><span class="fl">1.0</span></span>
+<span id="cb11-17"><a href="#cb11-17" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">contrast</span><span class="kw">:</span><span class="at"> </span><span class="fl">0.6</span></span>
+<span id="cb11-18"><a href="#cb11-18" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">gamma</span><span class="kw">:</span><span class="at"> </span><span class="fl">1.2</span></span></code></pre></div>
+<h4 id="combining-cli-rules-and-a-config-file">Combining CLI rules and a
+config file</h4>
+<p>CLI rules are checked before config file rules. Use this to override
+specific entries from a shared config on a given run:</p>
+<div class="sourceCode" id="cb12"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run convert_cines.py . <span class="at">--config</span> shared.yaml <span class="at">--rule</span> <span class="st">&quot;*night*:max_intensity=0.15&quot;</span></span></code></pre></div>
+<h4 id="verbose-output">Verbose output</h4>
+<p>Add <code>-v</code> to print which enhancement values are applied to
+each file (useful when rules are active):</p>
+<div class="sourceCode" id="cb13"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run convert_cines.py . <span class="at">--config</span> enhance.yaml <span class="at">-v</span> <span class="at">-n</span></span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a><span class="co"># [1/12] run1/night_001.cine → run1/night_001.mp4</span></span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a><span class="co">#   enhancement: max_intensity=0.25 contrast=1.0 gamma=0.75</span></span></code></pre></div>
+<h3 id="output-path-behaviour">Output path behaviour</h3>
+<table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Output location</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>No <code>--output-dir</code></td>
+<td>MP4 written next to source file, same directory</td>
+</tr>
+<tr>
+<td><code>--output-dir /out</code></td>
+<td>Source directory tree mirrored under <code>/out</code></td>
+</tr>
+</tbody>
+</table>
+<p>Example with mirrored output:</p>
+<pre><code>source:  rawdata/run1/sub/shot1.cine
+output:  rawdata/compressed/run1/sub/shot1.mp4</code></pre>
+<p><code>--suffix</code> inserts text before the extension,
+e.g. <code>--suffix _preview</code> writes
+<code>shot1_preview.mp4</code>.</p>
+<h3 id="progress-tracking-and-resuming-1">Progress tracking and
+resuming</h3>
+<p>Progress tracking is <strong>on by default</strong>. Every run writes
+a human-readable CSV
+(<code>&lt;source_dir&gt;/conversion_progress.csv</code> unless
+overridden) recording each file’s status, encoding parameters, and check
+results. The file is written atomically after every status change, so an
+interrupted run — Ctrl-C, a crash, an ffmpeg error — never leaves a
+corrupt progress file, and can always be resumed.</p>
+<p>Each file progresses through statuses as it’s processed:
+<code>queued</code> → <code>converted</code> →
+<code>psnr_passed</code>/<code>psnr_failed</code> →
+<code>check_passed</code>/<code>check_failed</code>. Only
+<code>check_passed</code>/<code>check_failed</code> are treated as fully
+done and skipped outright on resume; a file left at
+<code>converted</code> will still get its checks run, and one left at
+<code>psnr_passed</code>/<code>psnr_failed</code> will still run
+<code>--check</code> if requested.</p>
+<p>If a file’s encoding parameters (<code>crf</code>,
+<code>preset</code>, <code>fps</code>, or the resolved enhancement
+filter) differ from what’s stored, it’s automatically re-queued and
+force-reconverted, even without <code>--overwrite</code> — so changing a
+<code>--rule</code> only re-processes the files that rule affects.</p>
+<div class="sourceCode" id="cb15"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Normal run — progress tracked automatically</span></span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run convert_cines.py rawdata/videos <span class="at">--output-dir</span> compressed <span class="at">--check</span></span>
+<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a><span class="co"># ...run gets interrupted...</span></span>
+<span id="cb15-5"><a href="#cb15-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-6"><a href="#cb15-6" aria-hidden="true" tabindex="-1"></a><span class="co"># Resume where it left off, reusing all stored parameters (source_dir can be omitted)</span></span>
+<span id="cb15-7"><a href="#cb15-7" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run convert_cines.py <span class="at">--continue</span></span>
+<span id="cb15-8"><a href="#cb15-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-9"><a href="#cb15-9" aria-hidden="true" tabindex="-1"></a><span class="co"># Resume a run tracked by a specific progress file</span></span>
+<span id="cb15-10"><a href="#cb15-10" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run convert_cines.py <span class="at">--continue</span> <span class="at">--progress-file</span> rawdata/videos/conversion_progress.csv</span>
+<span id="cb15-11"><a href="#cb15-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-12"><a href="#cb15-12" aria-hidden="true" tabindex="-1"></a><span class="co"># Start over from scratch, ignoring prior progress</span></span>
+<span id="cb15-13"><a href="#cb15-13" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run convert_cines.py rawdata/videos <span class="at">--output-dir</span> compressed <span class="at">--restart</span></span>
+<span id="cb15-14"><a href="#cb15-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-15"><a href="#cb15-15" aria-hidden="true" tabindex="-1"></a><span class="co"># Disable progress tracking entirely (no CSV written)</span></span>
+<span id="cb15-16"><a href="#cb15-16" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run convert_cines.py rawdata/videos <span class="at">--no-progress</span></span></code></pre></div>
+<p><code>--continue</code> restores stored conversion parameters
+(source/output dirs, <code>crf</code>, <code>preset</code>,
+<code>fps</code>, enhancement settings, rules, PSNR/check thresholds)
+from the progress file. Run-mode flags — <code>--check</code>,
+<code>--verbose</code>, <code>--remove-cine</code>, etc. — are
+<strong>not</strong> stored and must be passed again on each run.</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--progress-file PATH</code></td>
+<td><code>&lt;source_dir&gt;/conversion_progress.csv</code></td>
+<td>Path for the progress CSV. Created automatically</td>
+</tr>
+<tr>
+<td><code>--no-progress</code></td>
+<td>off</td>
+<td>Disable progress tracking entirely (no CSV file)</td>
+</tr>
+<tr>
+<td><code>--continue</code></td>
+<td>off</td>
+<td>Resume a previous run using all parameters stored in the progress
+file; <code>source_dir</code> may be omitted</td>
+</tr>
+<tr>
+<td><code>--restart</code></td>
+<td>off</td>
+<td>Clear the progress file and start fresh; re-converts all files
+regardless of prior status</td>
+</tr>
+</tbody>
+</table>
+<h3 id="quality-checks-1">Quality checks</h3>
+<p>Two independent checks are available to verify a conversion didn’t
+lose or corrupt content.</p>
+<p><strong>Inline PSNR check</strong> (<code>--test-psnr</code>,
+auto-enabled in test mode) — runs immediately after each conversion.
+Samples a few frames from the filtered source and the compressed output
+and compares them on the Y (luma) channel using ffmpeg’s
+<code>psnr</code> filter. Fast, since no temp files are written.</p>
+<p><strong>Thorough check</strong> (<code>--check</code>) — extracts
+grayscale R-channel PNGs from both the source and the output and
+compares those, which avoids YUV↔︎RGB conversion artifacts. Slower, but
+more accurate, and also runs against files that were skipped because
+they were already converted in a prior run. Skipped when
+<code>--test-frames</code> is set. When <code>--check</code> is active,
+the inline PSNR check is automatically suppressed unless
+<code>--test-psnr</code> is also passed explicitly — the thorough check
+subsumes it.</p>
+<div class="sourceCode" id="cb16"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Force inline PSNR check on a normal (non-test) run</span></span>
+<span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run convert_cines.py . <span class="at">--output-dir</span> compressed <span class="at">--test-psnr</span></span>
+<span id="cb16-3"><a href="#cb16-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-4"><a href="#cb16-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Thorough R-channel check after conversion (and for already-converted files)</span></span>
+<span id="cb16-5"><a href="#cb16-5" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run convert_cines.py . <span class="at">--output-dir</span> compressed <span class="at">--check</span></span>
+<span id="cb16-6"><a href="#cb16-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-7"><a href="#cb16-7" aria-hidden="true" tabindex="-1"></a><span class="co"># Save extracted check frames for visual inspection, mirroring the source tree</span></span>
+<span id="cb16-8"><a href="#cb16-8" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run convert_cines.py . <span class="at">--output-dir</span> compressed <span class="at">--check</span> <span class="at">--check-dir</span> /tmp/check_frames</span>
+<span id="cb16-9"><a href="#cb16-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-10"><a href="#cb16-10" aria-hidden="true" tabindex="-1"></a><span class="co"># ...or save them next to each output file instead</span></span>
+<span id="cb16-11"><a href="#cb16-11" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run convert_cines.py . <span class="at">--output-dir</span> compressed <span class="at">--check</span> <span class="at">--keep-frames</span></span></code></pre></div>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--test-psnr</code></td>
+<td>off</td>
+<td>Run inline PSNR check after each conversion (also auto-enabled in
+any test mode)</td>
+</tr>
+<tr>
+<td><code>--psnr-frames N</code></td>
+<td><code>5</code></td>
+<td>Frames to sample for the inline check</td>
+</tr>
+<tr>
+<td><code>--psnr-threshold T</code></td>
+<td><code>30.0</code></td>
+<td>Minimum acceptable PSNR in dB — used by both the inline check and
+<code>--check</code></td>
+</tr>
+<tr>
+<td><code>--check</code></td>
+<td>off</td>
+<td>Run the thorough R-channel PSNR check</td>
+</tr>
+<tr>
+<td><code>--check-frames N</code></td>
+<td><code>5</code></td>
+<td>Frames to sample for <code>--check</code></td>
+</tr>
+<tr>
+<td><code>--check-dir DIR</code></td>
+<td><em>(temp, cleaned up)</em></td>
+<td>Save extracted PNGs under DIR, mirroring the source tree</td>
+</tr>
+<tr>
+<td><code>--keep-frames</code></td>
+<td>off</td>
+<td>Save extracted check frames next to the output MP4 (ignored if
+<code>--check-dir</code> is set)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="removing-verified-cine-files-1">Removing verified CINE
+files</h3>
+<p><code>--remove-cine</code> writes a shell (<code>.sh</code>) and
+batch (<code>.bat</code>) script listing every CINE file whose thorough
+<code>--check</code> passed, for you to review and run manually — it
+never deletes anything itself.</p>
+<p>For safety, the <strong>first CINE file encountered in each source
+subdirectory</strong> (sorted by filename) is always kept out of the
+removal list, even if it passed <code>--check</code>, so one original
+per directory remains as a spot-check reference.</p>
+<p>Because pass/fail status is read from the progress log,
+<code>--remove-cine</code> also picks up files that passed
+<code>--check</code> in an earlier run — you can run
+<code>--check</code> once, then add <code>--remove-cine</code> on a
+later <code>--continue</code> run without re-checking anything.</p>
+<div class="sourceCode" id="cb17"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run convert_cines.py rawdata/videos <span class="at">--output-dir</span> compressed <span class="at">--check</span> <span class="at">--remove-cine</span></span>
+<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a><span class="co"># review the generated script, then run it:</span></span>
+<span id="cb17-4"><a href="#cb17-4" aria-hidden="true" tabindex="-1"></a><span class="fu">bash</span> remove_cines.sh      <span class="co"># macOS/Linux</span></span>
+<span id="cb17-5"><a href="#cb17-5" aria-hidden="true" tabindex="-1"></a><span class="ex">remove_cines.bat</span>          <span class="co"># Windows</span></span></code></pre></div>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--remove-cine</code></td>
+<td>off</td>
+<td>After <code>--check</code>, write a shell/bat script listing CINE
+files that passed, for manual review and deletion</td>
+</tr>
+<tr>
+<td><code>--remove-script PATH</code></td>
+<td><code>remove_cines.sh</code>/<code>.bat</code> next to
+<code>source_dir</code>’s parent directory</td>
+<td>Base path for the generated removal scripts</td>
+</tr>
+</tbody>
+</table>
+<h3 id="tiff-frame-extraction-1">TIFF frame extraction</h3>
+<p><code>--tiff-dir</code> extracts individual frames as raw,
+uncompressed 16-bit grayscale TIFFs — no enhancement filters are ever
+applied, and no quality check is run on TIFF output. Each source file
+gets its own subdirectory (named after the source stem) under
+<code>--tiff-dir</code>, mirroring the source directory tree. Extraction
+runs after conversion (or for already-converted/skipped files) and is
+skipped if the output subdirectory already contains TIFFs, unless
+<code>--overwrite</code> is set.</p>
+<p>Three selection modes, controlled by <code>--tiff-count</code> /
+<code>--tiff-every</code> (mutually exclusive):</p>
+<div class="sourceCode" id="cb18"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Extract every frame as TIFF (the default when neither flag below is given)</span></span>
+<span id="cb18-2"><a href="#cb18-2" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run convert_cines.py . <span class="at">--tiff-dir</span> tiffs</span>
+<span id="cb18-3"><a href="#cb18-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-4"><a href="#cb18-4" aria-hidden="true" tabindex="-1"></a><span class="co"># 10 evenly spaced frames per file</span></span>
+<span id="cb18-5"><a href="#cb18-5" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run convert_cines.py . <span class="at">--tiff-dir</span> tiffs <span class="at">--tiff-count</span> 10</span>
+<span id="cb18-6"><a href="#cb18-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-7"><a href="#cb18-7" aria-hidden="true" tabindex="-1"></a><span class="co"># Every 100th frame</span></span>
+<span id="cb18-8"><a href="#cb18-8" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run convert_cines.py . <span class="at">--tiff-dir</span> tiffs <span class="at">--tiff-every</span> 100</span></code></pre></div>
+<p>Add <code>--tiff-pair-sep N</code> to also extract a second frame N
+source frames after each anchor, producing consecutive pairs in the
+output (e.g. for PIV-style frame-pair analysis):</p>
+<div class="sourceCode" id="cb19"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Every 100th frame, plus its partner 3 frames later</span></span>
+<span id="cb19-2"><a href="#cb19-2" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run convert_cines.py . <span class="at">--tiff-dir</span> tiffs <span class="at">--tiff-every</span> 100 <span class="at">--tiff-pair-sep</span> 3</span>
+<span id="cb19-3"><a href="#cb19-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-4"><a href="#cb19-4" aria-hidden="true" tabindex="-1"></a><span class="co"># 10 evenly spaced pairs, each pair separated by 3 frames</span></span>
+<span id="cb19-5"><a href="#cb19-5" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run convert_cines.py . <span class="at">--tiff-dir</span> tiffs <span class="at">--tiff-count</span> 10 <span class="at">--tiff-pair-sep</span> 3</span></code></pre></div>
+<p>Output layout:</p>
+<pre><code>tiff_dir/
+  rel/path/to/
+    shot1/
+      shot1_0001.tiff
+      shot1_0002.tiff
+      ...</code></pre>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--tiff-dir DIR</code></td>
+<td><em>(none — disabled)</em></td>
+<td>Output root for extracted TIFFs; enables TIFF extraction; mirrors
+the source tree, one subdirectory per source file</td>
+</tr>
+<tr>
+<td><code>--tiff-count N</code></td>
+<td>all frames</td>
+<td>Integer for N evenly-distributed frames, or the literal
+<code>&#39;all&#39;</code>. Mutually exclusive with
+<code>--tiff-every</code></td>
+</tr>
+<tr>
+<td><code>--tiff-every M</code></td>
+<td><em>(none)</em></td>
+<td>Extract one frame (or pair) every M source frames. Mutually
+exclusive with <code>--tiff-count</code></td>
+</tr>
+<tr>
+<td><code>--tiff-pair-sep N</code></td>
+<td><em>(none)</em></td>
+<td>Also extract a frame N source frames after each anchor. Requires
+<code>--tiff-every</code> or <code>--tiff-count N</code> (not
+<code>&#39;all&#39;</code>); if combined with <code>--tiff-every M</code>, N
+must be less than M</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="find_matched_cine_mp4.py">find_matched_cine_mp4.py</h2>
+<p>After a batch conversion, use <code>find_matched_cine_mp4.py</code>
+to find original source files that have a converted counterpart in the
+same directory, verify the content matches via <strong>Spearman rank
+correlation</strong>, and generate a removal script for the originals
+(the larger file in each passing pair). Spearman correlation is
+invariant to any monotonic per-pixel transform (gain, gamma, curves), so
+it tolerates the brightness/contrast/gamma adjustments
+<code>convert_cines.py</code> may have applied, while still catching
+genuine content mismatches. Before queuing a CINE for removal, the tool
+preserves its camera metadata as an XML file next to the MP4 — using the
+existing Phantom-generated XML sidecar if present, or extracting it from
+the binary header with <code>pycine</code> if not.</p>
+<h3 id="usage-examples">Usage examples</h3>
+<div class="sourceCode" id="cb21"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Find matched pairs, check correlation, write removal script</span></span>
+<span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run find_matched_cine_mp4.py rawdata/</span>
+<span id="cb21-3"><a href="#cb21-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb21-4"><a href="#cb21-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Dry run: list matches without running the check</span></span>
+<span id="cb21-5"><a href="#cb21-5" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run find_matched_cine_mp4.py rawdata/ <span class="at">--dry-run</span></span>
+<span id="cb21-6"><a href="#cb21-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb21-7"><a href="#cb21-7" aria-hidden="true" tabindex="-1"></a><span class="co"># Adjust threshold (lower tolerates more difference; default 0.99)</span></span>
+<span id="cb21-8"><a href="#cb21-8" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run find_matched_cine_mp4.py rawdata/ <span class="at">--threshold</span> 0.95</span>
+<span id="cb21-9"><a href="#cb21-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb21-10"><a href="#cb21-10" aria-hidden="true" tabindex="-1"></a><span class="co"># Save extracted frames to a separate directory (mirrors source tree)</span></span>
+<span id="cb21-11"><a href="#cb21-11" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run find_matched_cine_mp4.py rawdata/ <span class="at">--check-dir</span> /tmp/frames</span>
+<span id="cb21-12"><a href="#cb21-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb21-13"><a href="#cb21-13" aria-hidden="true" tabindex="-1"></a><span class="co"># Save extracted frames next to the video files</span></span>
+<span id="cb21-14"><a href="#cb21-14" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run find_matched_cine_mp4.py rawdata/ <span class="at">--keep-frames</span></span></code></pre></div>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>source_dir</code></td>
+<td><em>(required)</em></td>
+<td>Root directory to scan</td>
+</tr>
+<tr>
+<td><code>--ext LIST</code></td>
+<td><code>.cine,.mp4,.avi,.mov</code></td>
+<td>Comma-separated extensions to consider</td>
+</tr>
+<tr>
+<td><code>--threshold T</code></td>
+<td><code>0.99</code></td>
+<td>Minimum Spearman rank correlation to count a pair as matching</td>
+</tr>
+<tr>
+<td><code>--frames N</code></td>
+<td><code>5</code></td>
+<td>Number of frames to sample per pair</td>
+</tr>
+<tr>
+<td><code>--check-dir DIR</code></td>
+<td><em>(temp, cleaned up)</em></td>
+<td>Save extracted grayscale PNGs under DIR, mirroring source tree</td>
+</tr>
+<tr>
+<td><code>--keep-frames</code></td>
+<td>off</td>
+<td>Save extracted check frames next to the video files</td>
+</tr>
+<tr>
+<td><code>--remove-script PATH</code></td>
+<td><code>remove_originals</code> next to <code>source_dir</code></td>
+<td>Base path for <code>.sh</code> / <code>.bat</code> removal
+scripts</td>
+</tr>
+<tr>
+<td><code>--no-metadata</code></td>
+<td>off</td>
+<td>Skip XML metadata extraction/copy for CINE files</td>
+</tr>
+<tr>
+<td><code>--progress-file PATH</code></td>
+<td><code>&lt;source_dir&gt;/find_matched_progress.csv</code></td>
+<td>Path for the progress CSV</td>
+</tr>
+<tr>
+<td><code>--no-progress</code></td>
+<td>off</td>
+<td>Disable progress tracking entirely (no CSV file)</td>
+</tr>
+<tr>
+<td><code>--continue</code></td>
+<td>off</td>
+<td>Resume a previous run: skip pairs already passed or failed</td>
+</tr>
+<tr>
+<td><code>--restart</code></td>
+<td>off</td>
+<td>Clear the progress file and start fresh</td>
+</tr>
+<tr>
+<td><code>-n</code>, <code>--dry-run</code></td>
+<td>off</td>
+<td>List matches without running checks or writing scripts</td>
+</tr>
+<tr>
+<td><code>-v</code>, <code>--verbose</code></td>
+<td>off</td>
+<td>Print per-frame correlation values</td>
+</tr>
+</tbody>
+</table>
+<h3 id="metadata-preservation">Metadata preservation</h3>
+<p>Metadata is only extracted/copied when the CINE is the file being
+removed from a passing pair — if the MP4 (or other surviving format) is
+larger and gets removed instead, no XML is written. Pass
+<code>--no-metadata</code> to skip this step entirely.</p>
+<h3 id="progress-tracking-and-resuming-2">Progress tracking and
+resuming</h3>
+<p>Like <code>convert_cines.py</code>, progress tracking is <strong>on
+by default</strong>: each run writes a CSV
+(<code>&lt;source_dir&gt;/find_matched_progress.csv</code> unless
+overridden) tracking every pair’s status (<code>queued</code> →
+<code>passed</code>/<code>failed</code>/<code>error</code>), written
+atomically so an interrupted run can always be resumed.</p>
+<div class="sourceCode" id="cb22"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb22-1"><a href="#cb22-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Normal run — progress tracked automatically</span></span>
+<span id="cb22-2"><a href="#cb22-2" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run find_matched_cine_mp4.py rawdata/</span>
+<span id="cb22-3"><a href="#cb22-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb22-4"><a href="#cb22-4" aria-hidden="true" tabindex="-1"></a><span class="co"># ...run gets interrupted...</span></span>
+<span id="cb22-5"><a href="#cb22-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb22-6"><a href="#cb22-6" aria-hidden="true" tabindex="-1"></a><span class="co"># Resume: pairs already marked passed/failed are skipped</span></span>
+<span id="cb22-7"><a href="#cb22-7" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run find_matched_cine_mp4.py rawdata/ <span class="at">--continue</span></span>
+<span id="cb22-8"><a href="#cb22-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb22-9"><a href="#cb22-9" aria-hidden="true" tabindex="-1"></a><span class="co"># Start over from scratch, ignoring prior progress</span></span>
+<span id="cb22-10"><a href="#cb22-10" aria-hidden="true" tabindex="-1"></a><span class="ex">uv</span> run find_matched_cine_mp4.py rawdata/ <span class="at">--restart</span></span></code></pre></div>
+<p><code>--continue</code> warns if <code>--threshold</code> has changed
+since the stored run, since previously-passed/failed results used the
+old threshold. Pairs left at <code>error</code> status (an exception
+during the check, e.g. a corrupt file) are retried automatically on
+resume, unlike <code>passed</code>/<code>failed</code> pairs.</p>
+<!--
+To render this file to HTML:
+pandoc README.md -o README.html -s --css=pandoc.css --embed-resources --standalone
+-->
+</body>
+</html>
