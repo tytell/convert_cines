@@ -32,7 +32,7 @@ from progress_log import ProgressLog, TERMINAL_STATUSES
 
 def print_psnr_result(result):
     if result.error:
-        print(f"  psnr: ERROR  {result.error}")
+        logger.error(f"  psnr: ERROR  {result.error}")
         return
     psnrs = [f.psnr for f in result.frames]
     avg = sum(psnrs) / len(psnrs)
@@ -41,16 +41,16 @@ def print_psnr_result(result):
     avg_s = "inf" if math.isinf(avg) else f"{avg:.1f}"
     mn_s = "inf" if math.isinf(mn) else f"{mn:.1f}"
     if result.passed:
-        print(f"  psnr: PASS  (avg {avg_s} dB, min {mn_s} dB, {n}/{n} frames)")
+        logger.info(f"  psnr: PASS  (avg {avg_s} dB, min {mn_s} dB, {n}/{n} frames)")
     else:
         n_pass = sum(1 for f in result.frames if f.passed)
-        print(f"  psnr: FAIL  (avg {avg_s} dB, min {mn_s} dB, "
-              f"{n_pass}/{n} frames passed, threshold {result.threshold:.1f} dB)")
+        logger.info(f"  psnr: FAIL  (avg {avg_s} dB, min {mn_s} dB, "
+                    f"{n_pass}/{n} frames passed, threshold {result.threshold:.1f} dB)")
 
 
 def print_check_result(result):
     if result.error:
-        print(f"  check: ERROR  {result.error}")
+        logger.error(f"  check: ERROR  {result.error}")
         return
     psnrs = [f.psnr for f in result.frames]
     avg = sum(psnrs) / len(psnrs)
@@ -59,14 +59,19 @@ def print_check_result(result):
     avg_s = "inf" if math.isinf(avg) else f"{avg:.1f}"
     mn_s = "inf" if math.isinf(mn) else f"{mn:.1f}"
     if result.passed:
-        print(f"  check: PASS  (avg {avg_s} dB, min {mn_s} dB, {n}/{n} frames)")
+        logger.info(f"  check: PASS  (avg {avg_s} dB, min {mn_s} dB, {n}/{n} frames)")
     else:
         n_pass = sum(1 for f in result.frames if f.passed)
-        print(f"  check: FAIL  (avg {avg_s} dB, min {mn_s} dB, "
-              f"{n_pass}/{n} frames passed, threshold {result.threshold:.1f} dB)")
+        logger.info(f"  check: FAIL  (avg {avg_s} dB, min {mn_s} dB, "
+                    f"{n_pass}/{n} frames passed, threshold {result.threshold:.1f} dB)")
 
-
-def build_vf(max_intensity, contrast, gamma):
+LUTRGB_CUBIC_FILTER = (
+    "lutrgb="
+    "r='clip(3*val*val/255 - 2*val*val*val/(255*255), 0, 255)':"
+    "g='clip(3*val*val/255 - 2*val*val*val/(255*255), 0, 255)':"
+    "b='clip(3*val*val/255 - 2*val*val*val/(255*255), 0, 255)'"
+)
+def build_vf(max_intensity, contrast, gamma, lutrgb_cubic=False):
     parts = []
     if max_intensity != 1.0:
         max_intensity = max(0.0, min(1.0, max_intensity))
@@ -78,6 +83,8 @@ def build_vf(max_intensity, contrast, gamma):
         eq_params.append(f"gamma={gamma}")
     if eq_params:
         parts.append("eq=" + ":".join(eq_params))
+    if lutrgb_cubic:
+        parts.append(LUTRGB_CUBIC_FILTER)
     return ",".join(parts) if parts else None
 
 
@@ -143,7 +150,7 @@ def build_cmd(src, dst, args, max_intensity, contrast, gamma, *, force_overwrite
         cmd += ["-r", str(args.fps)]
     cmd += ["-i", str(src)]
 
-    vf = build_vf(max_intensity, contrast, gamma)
+    vf = build_vf(max_intensity, contrast, gamma, lutrgb_cubic=args.lutrgb_cubic)
     if vf:
         cmd += ["-vf", vf]
     if args.test_frames:
@@ -153,9 +160,10 @@ def build_cmd(src, dst, args, max_intensity, contrast, gamma, *, force_overwrite
         "-crf", str(args.crf),
         "-preset", args.preset,
         "-pix_fmt", "yuvj420p",
-        "-tag:v", "hvc1",
-        str(dst),
+        "-tag:v", "hvc1"
     ]
+    cmd.append(str(dst))
+
     return cmd
 
 
@@ -232,7 +240,7 @@ def extract_tiffs(src: Path, out_dir: Path, args) -> bool:
         try:
             total = _get_frame_count(src)
         except (RuntimeError, ValueError) as e:
-            print(f"  tiffs: ERROR  {e}", file=sys.stderr)
+            logger.error(f"  tiffs: ERROR  {e}")
             return False
         anchors = [total // 2] if K == 1 else [
             round(i * (total - 1) / (K - 1)) for i in range(K)
@@ -252,20 +260,20 @@ def extract_tiffs(src: Path, out_dir: Path, args) -> bool:
                '-vf', 'format=gray16le', '-pix_fmt', 'gray16le', str(out_pattern)]
 
     if args.verbose:
-        print(f"  {' '.join(cmd)}")
+        logger.info(f"  {' '.join(cmd)}")
 
     result = subprocess.run(cmd, capture_output=not args.verbose)
     if result.returncode != 0:
         if not args.verbose:
-            print(result.stderr.decode(errors='replace'), end='', file=sys.stderr)
-        print(f"  tiffs: ERROR  ffmpeg exited with code {result.returncode}", file=sys.stderr)
+            logger.error(result.stderr.decode(errors='replace'))
+        logger.error(f"  tiffs: ERROR  ffmpeg exited with code {result.returncode}")
         return False
 
     n_tiffs = len(list(out_dir.glob('*.tiff')))
     if pair_sep:
-        print(f"  tiffs: {n_tiffs} frames ({n_tiffs // 2} pairs) → {out_dir}/")
+        logger.info(f"  tiffs: {n_tiffs} frames ({n_tiffs // 2} pairs) → {out_dir}/")
     else:
-        print(f"  tiffs: {n_tiffs} frames → {out_dir}/")
+        logger.info(f"  tiffs: {n_tiffs} frames → {out_dir}/")
     return True
 
 
@@ -293,6 +301,9 @@ def main():
                         help="Default contrast via eq filter (default: 1.0 = no adjustment)")
     parser.add_argument("--gamma", type=float, default=1.0,
                         help="Default gamma via eq filter (default: 1.0 = no adjustment)")
+    parser.add_argument("--lutrgb-cubic", action="store_true",
+                        help="Use cubic interpolation for LUTRGB filter (default: False)")
+     
     parser.add_argument("--rule", action="append", metavar="PATTERN:param=value,...",
                         help="Per-file enhancement rule (repeatable). Pattern matches relative "
                              "path with wildcards. E.g.: --rule '*dark*:max_intensity=0.3,gamma=0.8'")
@@ -309,9 +320,14 @@ def main():
                         help="Print ffmpeg commands without running them")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Print detailed processing info")
-    parser.add_argument("--test-psnr", action="store_true",
+
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--test-psnr", action="store_true",
                         help="Run inline PSNR check after each conversion "
-                             "(also auto-enabled in any test mode)")
+                             "(slow, and may not make sense for color videos)")
+    group.add_argument("--no-test-psnr", dest="test_psnr", action="store_false")
+    parser.set_defaults(test_psnr=None)  # None = auto, True = force, False = disable
+
     parser.add_argument("--psnr-frames", type=int, default=DEFAULT_PSNR_FRAMES, metavar="N",
                         help=f"Frames to sample for inline PSNR check (default: {DEFAULT_PSNR_FRAMES})")
     parser.add_argument("--psnr-threshold", type=float, default=DEFAULT_PSNR_THRESHOLD, metavar="T",
@@ -510,7 +526,12 @@ def main():
     psnr_failed, check_failed = 0, 0
     # Inline PSNR is suppressed when --check is active (unless --test-psnr forces it),
     # since the thorough check subsumes it.
-    run_psnr = (test_mode or args.test_psnr) and (args.test_psnr or not args.check)
+    if not args.check and args.test_psnr:
+        run_psnr = True
+    elif test_mode and args.test_psnr is None:
+        run_psnr = True
+    else:
+        run_psnr = False
     cines_to_remove: list[Path] = []
     seen_src_dirs: set[Path] = set()
 
@@ -562,7 +583,7 @@ def main():
 
         # Skip files that are fully done
         if status in TERMINAL_STATUSES:
-            print(f"  skipping ({status})")
+            logger.info(f"  skipping ({status})")
             if args.remove_cine and status == 'check_passed' and not is_first_in_dir:
                 cines_to_remove.append(src)
             skipped += 1
@@ -577,12 +598,13 @@ def main():
             skipped += 1
             conversion_ok = True
         elif dst.exists() and not args.overwrite and not force_ow:
-            print("  skipping (output exists)")
+            logger.info("  skipping (output exists)")
             skipped += 1
             if log:
                 log.update(src, 'converted')
             conversion_ok = True
         else:
+            logger.info(f"Converting {src} → {dst}")
             cmd = build_cmd(src, dst, args, max_intensity, contrast, gamma,
                             force_overwrite=force_ow)
             if args.dry_run:
@@ -600,12 +622,12 @@ def main():
                 # Remove the partial output so a resume re-encodes from scratch
                 if dst.exists():
                     dst.unlink()
-                    print(f"  removed partial output: {dst.name}", file=sys.stderr)
+                    logger.error(f"  removed partial output: {dst.name}")
                 if interrupted:
                     if log:
                         log.update(src, 'conversion_failed', error="interrupted")
                     raise KeyboardInterrupt
-                print(f"  ERROR: ffmpeg exited with code {returncode}", file=sys.stderr)
+                logger.error(f"  ERROR: ffmpeg exited with code {returncode}")
                 failed += 1
                 if log:
                     log.update(src, 'conversion_failed',
@@ -621,6 +643,7 @@ def main():
 
         # --- Inline PSNR ---
         if run_psnr and status not in ('psnr_passed', 'psnr_failed'):
+            logger.info(f"Verifying PSNR for {src}")
             r = verify_psnr(src, dst, vf, n_frames=args.psnr_frames,
                             threshold=args.psnr_threshold, verbose=args.verbose)
             print_psnr_result(r)
@@ -633,6 +656,7 @@ def main():
 
         # --- Thorough check ---
         if args.check and not args.test_frames:
+            logger.info(f"Detailed check for {src}")
             r = check_file(src, dst, vf, n_frames=args.check_frames,
                            threshold=args.psnr_threshold,
                            check_dir=check_dir, verbose=args.verbose)
@@ -653,6 +677,7 @@ def main():
 
         # --- TIFF extraction ---
         if args.tiff_dir is not None:
+            logger.info(f"Extracting TIFFs for {src}")
             extract_tiffs(src, tiff_output_dir(src, args.source_dir, args.tiff_dir), args)
 
     if not args.dry_run:
