@@ -15,6 +15,7 @@ Recursively converts video files (default: `.cine`) to H.265 MP4 using ffmpeg. S
   - [Dry run](#dry-run)
   - [File matching enhancement rules](#file-matching-enhancement-rules)
   - [Trimming](#trimming)
+  - [Rule specificity and merging](#rule-specificity-and-merging)
   - [Output path behaviour](#output-path-behaviour)
   - [Progress tracking and resuming](#progress-tracking-and-resuming)
   - [Quality checks](#quality-checks)
@@ -240,7 +241,7 @@ Progress tracking is automatically disabled during a dry run (no CSV is written)
 
 ### File matching enhancement rules
 
-When different files in a batch need different enhancement settings, rules can map filename patterns to specific parameter values. Rules are checked in order; the first matching rule wins. Files that match no rule use the global `--max-intensity`, `--contrast`, and `--gamma` values.
+When different files in a batch need different enhancement settings, rules can map filename patterns to specific parameter values. If more than one rule matches a file, they're merged **per parameter** — see [Rule specificity and merging](#rule-specificity-and-merging) below for exactly how. Files that match no rule (or whose matching rules don't set a given parameter) use the global `--max-intensity`, `--contrast`, and `--gamma` values.
 
 The same rules (and the same `--rule`/`--config` mechanism) also carry per-file trim settings — see [Trimming](#trimming) below.
 
@@ -379,6 +380,29 @@ uv run convert_cines.py . --config trim.yaml -v -n
 #   enhancement: max_intensity=0.25 contrast=1.0 gamma=1.0
 #   trim: time:1.000000:2.500000
 ```
+
+### Rule specificity and merging
+
+Rules aren't all-or-nothing: when more than one rule matches a file, they're merged **per parameter**, not just "first match wins entirely." This lets you set enhancement for a whole block of files with one pattern rule, then override just the trim (or just one enhancement value) for a single file with a second, more specific rule — without repeating the block's settings on that rule.
+
+```yaml
+rules:
+  - pattern: "run1/*"
+    max_intensity: 0.4          # applies to every file in run1/
+
+  - pattern: "run1/shot3.cine"  # no wildcards -> an exact file, not a pattern
+    start_frame: 500
+    duration_frames: 200        # shot3 gets its own trim, but still inherits
+                                 # max_intensity: 0.4 from the pattern rule above
+```
+
+How matching rules combine for a given file:
+
+1. **Specificity**: a rule whose pattern has no wildcards (`*`, `?`, `[`) is an *exact* match for one file and always outranks a *pattern* (wildcard) rule that also matches — regardless of which is listed first, and regardless of whether it came from `--rule` or `--config`.
+2. **Within the same specificity**, rules are checked in declaration order — `--rule` flags are declared before `--config` entries (so a CLI `--rule` still beats a same-specificity `--config` rule, matching the "CLI takes priority" behavior from before), and config entries follow file order.
+3. **Per parameter**: for each parameter independently, the highest-priority rule that actually sets it wins; a parameter a rule doesn't set is simply skipped when merging, falling through to the next-lower-priority match, and ultimately to the CLI default (`--max-intensity`, `--start-sec`, etc.) if nothing sets it at all. A blank CSV cell or an omitted YAML key means "not set," exactly like today.
+
+If merging produces a contradiction no single rule had on its own — e.g. a pattern rule sets `start_frame` and an exact rule for the same file sets `start_sec`, so the merged result has two units for "start" — that's an error, reported for the specific file before any conversion starts (the whole batch is checked upfront, not lazily as each file comes up).
 
 ### Output path behaviour
 

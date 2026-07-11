@@ -253,16 +253,39 @@ def load_rules(args, parser: argparse.ArgumentParser):
     return rules
 
 
+def _is_exact_pattern(pattern: str) -> bool:
+    """True if `pattern` has no glob wildcards, i.e. it's a literal relative path
+    rather than a pattern matching a block of files."""
+    return not any(ch in pattern for ch in "*?[")
+
+
+def resolve_overrides(rel_path, rules) -> dict:
+    """Merge overrides from every rule matching `rel_path`, per parameter.
+
+    Exact-filename rules (no wildcards) take priority over pattern rules; within
+    the same specificity tier, earlier-declared rules win. A parameter already
+    filled by a higher-priority rule is not overwritten by a lower-priority one
+    that also sets it — this is a strict superset of "first matching rule wins",
+    which is what you get automatically when only one rule matches a file.
+    """
+    matches = [(p, ov) for p, ov in rules if fnmatch(str(rel_path), p)]
+    # Stable sort: preserves declaration order within each specificity tier.
+    matches.sort(key=lambda m: 0 if _is_exact_pattern(m[0]) else 1)
+    merged: dict = {}
+    for _, overrides in matches:
+        for k, v in overrides.items():
+            merged.setdefault(k, v)
+    return merged
+
+
 def resolve_enhancement(rel_path, rules, args):
-    """Return (max_intensity, contrast, gamma) for a file, applying first matching rule."""
-    for pattern, overrides in rules:
-        if fnmatch(str(rel_path), pattern):
-            return (
-                float(overrides["max_intensity"]) if "max_intensity" in overrides else args.max_intensity,
-                float(overrides["contrast"]) if "contrast" in overrides else args.contrast,
-                float(overrides["gamma"]) if "gamma" in overrides else args.gamma,
-            )
-    return args.max_intensity, args.contrast, args.gamma
+    """Return (max_intensity, contrast, gamma) for a file, merging all matching rules."""
+    overrides = resolve_overrides(rel_path, rules)
+    return (
+        float(overrides["max_intensity"]) if "max_intensity" in overrides else args.max_intensity,
+        float(overrides["contrast"]) if "contrast" in overrides else args.contrast,
+        float(overrides["gamma"]) if "gamma" in overrides else args.gamma,
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -317,14 +340,14 @@ def _pick_override(overrides: dict, keys: tuple[str, ...]):
 
 
 def resolve_trim(rel_path, rules, args, src: Path) -> TrimSpec:
-    """Return the resolved TrimSpec for a file, applying the first matching rule
+    """Return the resolved TrimSpec for a file, merging all matching rules
     (falling back to CLI globals for start/end/duration independently, exactly
-    like resolve_enhancement)."""
-    matched_overrides = {}
-    for pattern, overrides in rules:
-        if fnmatch(str(rel_path), pattern):
-            matched_overrides = overrides
-            break
+    like resolve_enhancement). Raises ValueError if merging rules of different
+    specificity produces an ambiguous combination (e.g. one rule sets start_frame,
+    another sets start_sec) that no single rule had on its own — each rule is
+    validated alone at load time, but a merge-only conflict can only be caught here."""
+    matched_overrides = resolve_overrides(rel_path, rules)
+    validate_overrides(matched_overrides, f"file '{rel_path}' (merged from matching rules)")
 
     def pick(keys):
         found = _pick_override(matched_overrides, keys)
@@ -825,6 +848,21 @@ def main():
     logger.debug(f"{args.psnr_threshold=}, {args.psnr_frames=}")
 
     # -------------------------------------------------------------------------
+    # Resolve trim for every file upfront (not just when progress tracking is
+    # active): catches merge conflicts between rules of different specificity
+    # (e.g. a pattern rule sets start_frame, an exact-file rule sets start_sec
+    # for the same file) and any 'end - x' ffprobe failure before any file is
+    # touched, rather than partway through a long batch.
+    # -------------------------------------------------------------------------
+    trim_map: dict[Path, TrimSpec] = {}
+    for src in files:
+        rel = src.relative_to(args.source_dir) if src.is_relative_to(args.source_dir) else Path(src.name)
+        try:
+            trim_map[src] = resolve_trim(rel, rules, args, src)
+        except ValueError as e:
+            parser.error(str(e))
+
+    # -------------------------------------------------------------------------
     # Pre-loop: register all files in the progress log
     # -------------------------------------------------------------------------
     succeeded, skipped, failed = 0, 0, 0
@@ -841,9 +879,6 @@ def main():
     seen_src_dirs: set[Path] = set()
 
     force_overwrite_map: dict[Path, bool] = {}
-    # Cache TrimSpecs resolved here so the main loop doesn't re-probe (via ffprobe,
-    # for 'end - x' rules) the same file a second time.
-    trim_map: dict[Path, TrimSpec] = {}
     if log is not None:
         for src in files:
             dst_pre = output_path(src, args.source_dir, args.output_dir, args.suffix)
@@ -851,10 +886,8 @@ def main():
                        if src.is_relative_to(args.source_dir) else Path(src.name))
             mi, co, ga = resolve_enhancement(rel_pre, rules, args)
             vf_pre = build_vf(mi, co, ga)
-            trim_pre = resolve_trim(rel_pre, rules, args, src)
-            trim_map[src] = trim_pre
             _, force_ow, reason = log.add_or_reconcile(
-                src, dst_pre, args.crf, args.preset, args.fps, vf_pre, trim_pre.canonical(),
+                src, dst_pre, args.crf, args.preset, args.fps, vf_pre, trim_map[src].canonical(),
                 args.overwrite
             )
             if reason:
@@ -872,7 +905,7 @@ def main():
         rel = src.relative_to(args.source_dir) if src.is_relative_to(args.source_dir) else Path(src.name)
         max_intensity, contrast, gamma = resolve_enhancement(rel, rules, args)
         vf = build_vf(max_intensity, contrast, gamma)
-        trim = trim_map.get(src) or resolve_trim(rel, rules, args, src)
+        trim = trim_map[src]
 
         print(f"[{i}/{len(files)}] {src} → {dst}")
         if rules and args.verbose:
