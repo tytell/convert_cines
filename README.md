@@ -1,6 +1,6 @@
 # convert_cines
 
-Recursively converts video files (default: `.cine`) to H.265 MP4 using ffmpeg. Supports brightness, contrast, and gamma adjustment, with per-file rules based on filename patterns, plus quality checking, resumable batch runs, and raw TIFF frame extraction.
+Recursively converts video files (default: `.cine`) to H.265 MP4 using ffmpeg. Supports brightness, contrast, and gamma adjustment and per-file trimming, with per-file rules based on filename patterns (from the CLI, a YAML file, or a CSV file), plus quality checking, resumable batch runs, and raw TIFF frame extraction.
 
 ## Table of Contents
 
@@ -14,6 +14,7 @@ Recursively converts video files (default: `.cine`) to H.265 MP4 using ffmpeg. S
   - [Test mode](#test-mode)
   - [Dry run](#dry-run)
   - [File matching enhancement rules](#file-matching-enhancement-rules)
+  - [Trimming](#trimming)
   - [Output path behaviour](#output-path-behaviour)
   - [Progress tracking and resuming](#progress-tracking-and-resuming)
   - [Quality checks](#quality-checks)
@@ -107,12 +108,18 @@ Flags are grouped below by the feature area they belong to, matching the section
 |---|---|---|
 | `-n`, `--dry-run` | off | Print ffmpeg commands without running them |
 
-#### File matching enhancement rules
+#### File matching enhancement rules and trimming
 
 | Flag | Default | Description |
 |---|---|---|
-| `--rule PATTERN:param=value,...` | _(none)_ | Per-file enhancement rule (repeatable) |
-| `--config PATH` | _(none)_ | YAML file with a `rules:` list |
+| `--rule PATTERN:param=value,...` | _(none)_ | Per-file enhancement/trim rule (repeatable) |
+| `--config PATH` | _(none)_ | YAML or CSV file with per-file overrides, dispatched on extension (`.csv` vs anything else) |
+| `--start-frame N` | _(none)_ | Global trim start, 1-indexed frame number |
+| `--end-frame N` | _(none)_ | Global trim end (inclusive): a number, `end`, or `end - N` |
+| `--duration-frames N` | _(none)_ | Global trim duration in frames |
+| `--start-sec T` | _(none)_ | Global trim start, in seconds |
+| `--end-sec T` | _(none)_ | Global trim end: a number, `end`, or `end - T` |
+| `--duration-sec T` | _(none)_ | Global trim duration in seconds |
 
 #### Progress tracking and resuming
 
@@ -235,6 +242,8 @@ Progress tracking is automatically disabled during a dry run (no CSV is written)
 
 When different files in a batch need different enhancement settings, rules can map filename patterns to specific parameter values. Rules are checked in order; the first matching rule wins. Files that match no rule use the global `--max-intensity`, `--contrast`, and `--gamma` values.
 
+The same rules (and the same `--rule`/`--config` mechanism) also carry per-file trim settings — see [Trimming](#trimming) below.
+
 Patterns use shell-style wildcards (`*`, `?`) and are matched against the **path relative to `source_dir`**.
 
 #### From the command line
@@ -258,7 +267,7 @@ uv run convert_cines.py . \
 uv run convert_cines.py . --config enhance.yaml
 ```
 
-The config file contains a `rules:` list. Each entry requires a `pattern` key plus any combination of `max_intensity`, `contrast`, and `gamma`.
+The config file contains a `rules:` list. Each entry requires a `pattern` key plus any combination of `max_intensity`, `contrast`, `gamma`, and the trim fields described in [Trimming](#trimming).
 
 ```yaml
 # enhance.yaml
@@ -299,6 +308,78 @@ uv run convert_cines.py . --config enhance.yaml -v -n
 #   enhancement: max_intensity=0.25 contrast=1.0 gamma=0.75
 ```
 
+### Trimming
+
+Individual files can be trimmed to a start/end (or start/duration) range, using the same `--rule`/`--config` mechanism as enhancement, plus six global `--start-*`/`--end-*`/`--duration-*` flags that apply to any file no rule overrides.
+
+#### Fields and units
+
+| Field | Frame form (1-indexed, inclusive) | Seconds form |
+|---|---|---|
+| Start | `start_frame` | `start_sec` |
+| End | `end_frame` | `end_sec` |
+| Duration | `duration_frames` | `duration_sec` |
+
+- The unit is just a suffix on the field name — no separate units setting, and the same names work as a `--rule`/CLI value, a YAML key, or a CSV column header.
+- `start_frame` is 1-indexed (`1` = the first frame). `end_frame` is inclusive (`end_frame: 100` keeps frame 100).
+- For a given file, set at most one of each pair (`start_frame`/`start_sec`, `end_frame`/`end_sec`), and at most one of `end_*`/`duration_*` — both define the clip's length, so setting both is an error.
+- `end_frame`/`end_sec` additionally accept:
+  - `end` — the last frame/timestamp of the source file;
+  - `end - x` — x frames/seconds before the last one, e.g. `end_frame: "end - 30"` drops the last 30 frames regardless of the file's actual length.
+
+Trimming is always exact and never tied to keyframes: any field resolved in frame units triggers an ffmpeg `select`+`setpts` filter addressed by exact frame index (immune to fps rounding); a trim resolved purely in seconds uses `-ss`/`-t` placed **after** `-i` (ffmpeg's "accurate" output seek, which decodes and checks every frame instead of snapping to the nearest keyframe).
+
+#### From the command line
+
+```bash
+# Same trim for every file: drop the first 2 seconds and the last 30 frames
+uv run convert_cines.py . --start-sec 2.0 --end-frame "end - 30"
+
+# Per-file trim via --rule
+uv run convert_cines.py . --rule "*trial03*:start_frame=1,duration_frames=500"
+```
+
+#### From a YAML config file
+
+```yaml
+# trim.yaml
+rules:
+  - pattern: "*night*"
+    max_intensity: 0.25       # enhancement and trim keys can mix in one rule
+    start_sec: 1.0
+    end_sec: "end - 0.5"
+
+  - pattern: "calibration/*"
+    start_frame: 1
+    duration_frames: 500
+```
+
+#### From a CSV config file
+
+`--config` also accepts a `.csv` file (dispatched by extension): one row per file/pattern, with a `pattern` or `filename` column (either name works) plus any of the enhancement/trim fields above as columns. A column that's missing entirely falls back to the CLI default for every row; a blank cell in a present column does the same for that row. Any column name that isn't a recognized field is a hard error, to catch typos before any file is touched.
+
+```csv
+pattern,start_frame,end_frame,max_intensity
+*trial01*,1,500,
+*trial02*,50,end - 10,0.6
+*trial03*,,,0.8
+```
+
+```bash
+uv run convert_cines.py . --config trim.csv
+```
+
+#### Verbose output
+
+`-v` also prints the resolved trim window for each file:
+
+```bash
+uv run convert_cines.py . --config trim.yaml -v -n
+# [1/12] run1/night_001.cine → run1/night_001.mp4
+#   enhancement: max_intensity=0.25 contrast=1.0 gamma=1.0
+#   trim: time:1.000000:2.500000
+```
+
 ### Output path behaviour
 
 | Scenario | Output location |
@@ -320,7 +401,7 @@ Progress tracking is **on by default**. Every run writes a human-readable CSV (`
 
 Each file progresses through statuses as it's processed: `queued` → `converted` → `psnr_passed`/`psnr_failed` → `check_passed`/`check_failed`. Only `check_passed`/`check_failed` are treated as fully done and skipped outright on resume; a file left at `converted` will still get its checks run, and one left at `psnr_passed`/`psnr_failed` will still run `--check` if requested.
 
-If a file's encoding parameters (`crf`, `preset`, `fps`, or the resolved enhancement filter) differ from what's stored, it's automatically re-queued and force-reconverted, even without `--overwrite` — so changing a `--rule` only re-processes the files that rule affects.
+If a file's encoding parameters (`crf`, `preset`, `fps`, the resolved enhancement filter, or the resolved trim window) differ from what's stored, it's automatically re-queued and force-reconverted, even without `--overwrite` — so changing a `--rule` (including a trim rule, or an `end - x` rule whose resolved value shifted because the source file itself changed) only re-processes the files it affects.
 
 ```bash
 # Normal run — progress tracked automatically
@@ -341,7 +422,7 @@ uv run convert_cines.py rawdata/videos --output-dir compressed --restart
 uv run convert_cines.py rawdata/videos --no-progress
 ```
 
-`--continue` restores stored conversion parameters (source/output dirs, `crf`, `preset`, `fps`, enhancement settings, rules, PSNR/check thresholds) from the progress file. Run-mode flags — `--check`, `--verbose`, `--remove-cine`, etc. — are **not** stored and must be passed again on each run.
+`--continue` restores stored conversion parameters (source/output dirs, `crf`, `preset`, `fps`, enhancement settings, global trim flags, rules, PSNR/check thresholds) from the progress file. Run-mode flags — `--check`, `--verbose`, `--remove-cine`, etc. — are **not** stored and must be passed again on each run.
 
 | Flag | Default | Description |
 |---|---|---|
@@ -357,6 +438,8 @@ Two independent checks are available to verify a conversion didn't lose or corru
 **Inline PSNR check** (`--test-psnr`, auto-enabled in test mode) — runs immediately after each conversion. Samples a few frames from the filtered source and the compressed output and compares them on the Y (luma) channel using ffmpeg's `psnr` filter. Fast, since no temp files are written.
 
 **Thorough check** (`--check`) — extracts grayscale R-channel PNGs from both the source and the output and compares those, which avoids YUV↔RGB conversion artifacts. Slower, but more accurate, and also runs against files that were skipped because they were already converted in a prior run. Skipped when `--test-frames` is set. When `--check` is active, the inline PSNR check is automatically suppressed unless `--test-psnr` is also passed explicitly — the thorough check subsumes it.
+
+Both checks sample source and output at *proportional* positions in the output's own duration. For a trimmed file this is automatically offset into the corresponding window of the source, so a trimmed clip is still compared against the right part of the source rather than against, say, 50% through the entire untrimmed recording.
 
 ```bash
 # Force inline PSNR check on a normal (non-test) run
@@ -406,6 +489,8 @@ remove_cines.bat          # Windows
 ### TIFF frame extraction
 
 `--tiff-dir` extracts individual frames as raw, uncompressed 16-bit grayscale TIFFs — no enhancement filters are ever applied, and no quality check is run on TIFF output. Each source file gets its own subdirectory (named after the source stem) under `--tiff-dir`, mirroring the source directory tree. Extraction runs after conversion (or for already-converted/skipped files) and is skipped if the output subdirectory already contains TIFFs, unless `--overwrite` is set.
+
+Note that trim rules (see [Trimming](#trimming)) have no effect on TIFF extraction — it always extracts from the full, untrimmed source file.
 
 Three selection modes, controlled by `--tiff-count` / `--tiff-every` (mutually exclusive):
 

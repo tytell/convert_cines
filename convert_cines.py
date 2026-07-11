@@ -6,10 +6,13 @@
 # ]
 # ///
 import argparse
+import csv
 import math
 import os
+import re
 import subprocess
 import sys
+from dataclasses import dataclass
 from fnmatch import fnmatch
 from pathlib import Path
 
@@ -24,6 +27,7 @@ logger.setLevel(logging.DEBUG)
 from check_conversion import (
     DEFAULT_PSNR_FRAMES,
     DEFAULT_PSNR_THRESHOLD,
+    _get_duration,
     check_file,
     verify_psnr,
 )
@@ -110,20 +114,142 @@ def find_files(source_dir, ext):
     return sorted(results)
 
 
-def load_rules(args):
-    """Return a list of (pattern, overrides_dict) from --rule flags and --config file."""
+# -----------------------------------------------------------------------------
+# Rule loading: --rule flags, YAML --config, CSV --config
+# -----------------------------------------------------------------------------
+
+ENHANCEMENT_KEYS = {"max_intensity", "contrast", "gamma"}
+TRIM_PLAIN_KEYS = {"start_frame", "start_sec", "duration_frames", "duration_sec"}
+TRIM_END_KEYS = {"end_frame", "end_sec"}
+TRIM_DURATION_KEYS = {"duration_frames", "duration_sec"}
+KNOWN_OVERRIDE_KEYS = ENHANCEMENT_KEYS | TRIM_PLAIN_KEYS | TRIM_END_KEYS
+
+# Matches bare "end" or "end - x" / "end-x" (x is a non-negative frame count or seconds).
+_END_RE = re.compile(r'^\s*end\s*(-\s*(?P<x>\d+(?:\.\d+)?))?\s*$', re.IGNORECASE)
+
+
+def _parse_plain_number(raw: str, field: str) -> float:
+    """Parse a non-negative numeric override value (start/duration fields)."""
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"{field}={raw!r} is not a number")
+    if val < 0:
+        raise ValueError(f"{field}={raw!r} must not be negative")
+    return val
+
+
+def _parse_end_value(raw: str, field: str) -> tuple[str, float]:
+    """Parse an end_frame/end_sec value: plain number, bare 'end', or 'end - x'.
+
+    Returns ('abs', value) for a plain absolute number, or ('rel', x) for an
+    end-relative expression (x frames/seconds before the last one; x=0 for bare 'end').
+    """
+    m = _END_RE.match(raw)
+    if m:
+        x = float(m.group("x")) if m.group("x") else 0.0
+        return ("rel", x)
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"{field}={raw!r} is not a number or 'end' / 'end - x'")
+    if val < 0:
+        raise ValueError(f"{field}={raw!r} must not be negative")
+    return ("abs", val)
+
+
+def validate_overrides(overrides: dict, context: str) -> None:
+    """Validate an overrides dict (raw string values) for known keys and unambiguous units.
+
+    Raises ValueError with a message naming `context` (e.g. a rule pattern, CSV row,
+    or "command line") on any problem. Only checks syntax; resolving an 'end - x'
+    expression to an absolute value still requires probing the source file, deferred
+    to resolve_trim().
+    """
+    for key in overrides:
+        if key not in KNOWN_OVERRIDE_KEYS:
+            raise ValueError(f"{context}: unrecognized parameter '{key}'")
+    if "start_frame" in overrides and "start_sec" in overrides:
+        raise ValueError(f"{context}: cannot set both start_frame and start_sec")
+    if "end_frame" in overrides and "end_sec" in overrides:
+        raise ValueError(f"{context}: cannot set both end_frame and end_sec")
+    if (overrides.keys() & TRIM_END_KEYS) and (overrides.keys() & TRIM_DURATION_KEYS):
+        raise ValueError(f"{context}: cannot set both an end and a duration")
+    for key in ("start_frame", "duration_frames", "start_sec", "duration_sec"):
+        if key in overrides:
+            _parse_plain_number(overrides[key], key)
+    for key in ("end_frame", "end_sec"):
+        if key in overrides:
+            _parse_end_value(overrides[key], key)
+
+
+def _load_yaml_rules(path: Path) -> list[tuple[str, dict]]:
+    import yaml
+    data = yaml.safe_load(open(path))
+    rules = []
+    for entry in data.get("rules", []):
+        entry = dict(entry)
+        pattern = entry.pop("pattern")
+        rules.append((pattern, {k: str(v) for k, v in entry.items()}))
+    return rules
+
+
+def _load_csv_rules(path: Path) -> list[tuple[str, dict]]:
+    """Load rules from a CSV with a 'pattern' (or 'filename') column plus any
+    combination of enhancement/trim columns. Missing columns simply aren't
+    included in the per-row overrides dict, so they fall back to CLI defaults."""
+    rules = []
+    with open(path, newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            row = dict(row)
+            pattern = row.pop("pattern", None)
+            filename = row.pop("filename", None)
+            pattern = (pattern or filename or "").strip()
+            if not pattern:
+                raise ValueError(
+                    f"{path}: CSV row missing a 'pattern'/'filename' value: {row}"
+                )
+            overrides = {
+                k.strip(): v.strip()
+                for k, v in row.items()
+                if k is not None and v is not None and v.strip() != ""
+            }
+            rules.append((pattern, overrides))
+    return rules
+
+
+def load_rules(args, parser: argparse.ArgumentParser):
+    """Return a list of (pattern, overrides_dict[str, str]) from --rule flags and
+    --config (YAML or CSV, dispatched on file extension). Validates all rules plus
+    the global CLI trim flags before returning; calls parser.error() on failure."""
     rules = []
     for r in (args.rule or []):
         pattern, _, params_str = r.partition(":")
-        params = dict(kv.split("=") for kv in params_str.split(",") if kv)
-        rules.append((pattern.strip(), {k: float(v) for k, v in params.items()}))
+        params = dict(kv.split("=", 1) for kv in params_str.split(",") if kv)
+        rules.append((pattern.strip(), params))
     if args.config:
-        import yaml
-        data = yaml.safe_load(open(args.config))
-        for entry in data.get("rules", []):
-            entry = dict(entry)
-            pattern = entry.pop("pattern")
-            rules.append((pattern, {k: float(v) for k, v in entry.items()}))
+        try:
+            if args.config.suffix.lower() == ".csv":
+                rules.extend(_load_csv_rules(args.config))
+            else:
+                rules.extend(_load_yaml_rules(args.config))
+        except (ValueError, OSError) as e:
+            parser.error(str(e))
+
+    cli_trim = {
+        k: getattr(args, k)
+        for k in ("start_frame", "start_sec", "end_frame", "end_sec",
+                   "duration_frames", "duration_sec")
+        if getattr(args, k) is not None
+    }
+    try:
+        validate_overrides(cli_trim, "command line")
+        for pattern, overrides in rules:
+            validate_overrides(overrides, f"rule '{pattern}'")
+    except ValueError as e:
+        parser.error(str(e))
+
     return rules
 
 
@@ -132,14 +258,160 @@ def resolve_enhancement(rel_path, rules, args):
     for pattern, overrides in rules:
         if fnmatch(str(rel_path), pattern):
             return (
-                overrides.get("max_intensity", args.max_intensity),
-                overrides.get("contrast", args.contrast),
-                overrides.get("gamma", args.gamma),
+                float(overrides["max_intensity"]) if "max_intensity" in overrides else args.max_intensity,
+                float(overrides["contrast"]) if "contrast" in overrides else args.contrast,
+                float(overrides["gamma"]) if "gamma" in overrides else args.gamma,
             )
     return args.max_intensity, args.contrast, args.gamma
 
 
-def build_cmd(src, dst, args, max_intensity, contrast, gamma, *, force_overwrite=False):
+# -----------------------------------------------------------------------------
+# Trimming
+# -----------------------------------------------------------------------------
+
+
+@dataclass
+class TrimSpec:
+    """Resolved trim window for one file.
+
+    Frame-exact mode (start0/end0 set) uses an ffmpeg select+setpts filter for
+    exact, keyframe-independent trimming. Time-based mode (start0 is None) uses
+    -ss/-t placed after -i, which is also keyframe-independent (accurate seek).
+    start_sec/duration_sec are always populated (even in frame-exact mode) for
+    PSNR/check source-offset windowing and the progress-log canonical string.
+    """
+    start_sec: float = 0.0
+    duration_sec: float | None = None
+    start0: int | None = None
+    end0: int | None = None
+
+    @property
+    def frame_exact(self) -> bool:
+        return self.start0 is not None
+
+    def filter_str(self) -> str | None:
+        if not self.frame_exact:
+            return None
+        if self.end0 is None:
+            return f"select='gte(n,{self.start0})',setpts=PTS-STARTPTS"
+        return f"select='between(n,{self.start0},{self.end0})',setpts=PTS-STARTPTS"
+
+    def canonical(self) -> str:
+        """A string capturing the fully-resolved trim window, used for progress-log
+        change detection. Empty string when there's no trim at all, so files that
+        were never trimmed don't spuriously re-queue against old progress logs."""
+        if self.frame_exact:
+            end_s = str(self.end0) if self.end0 is not None else "end"
+            return f"frame:{self.start0}:{end_s}"
+        if self.start_sec == 0.0 and self.duration_sec is None:
+            return ""
+        dur_s = f"{self.duration_sec:.6f}" if self.duration_sec is not None else ""
+        return f"time:{self.start_sec:.6f}:{dur_s}"
+
+
+def _pick_override(overrides: dict, keys: tuple[str, ...]):
+    for k in keys:
+        if k in overrides:
+            return k, overrides[k]
+    return None
+
+
+def resolve_trim(rel_path, rules, args, src: Path) -> TrimSpec:
+    """Return the resolved TrimSpec for a file, applying the first matching rule
+    (falling back to CLI globals for start/end/duration independently, exactly
+    like resolve_enhancement)."""
+    matched_overrides = {}
+    for pattern, overrides in rules:
+        if fnmatch(str(rel_path), pattern):
+            matched_overrides = overrides
+            break
+
+    def pick(keys):
+        found = _pick_override(matched_overrides, keys)
+        if found:
+            return found
+        for k in keys:
+            v = getattr(args, k)
+            if v is not None:
+                return k, v
+        return None
+
+    start_pick = pick(("start_frame", "start_sec"))
+    end_pick = pick(("end_frame", "end_sec"))
+    dur_pick = pick(("duration_frames", "duration_sec"))
+
+    if not start_pick and not end_pick and not dur_pick:
+        return TrimSpec()
+
+    use_frames = (
+        (start_pick and start_pick[0] == "start_frame")
+        or (end_pick and end_pick[0] == "end_frame")
+        or (dur_pick and dur_pick[0] == "duration_frames")
+    )
+
+    start_unit = start_val = None
+    if start_pick:
+        key, raw = start_pick
+        start_val = _parse_plain_number(raw, key)
+        start_unit = "frame" if key == "start_frame" else "sec"
+
+    end_unit = end_val = None
+    if end_pick:
+        key, raw = end_pick
+        kind, val = _parse_end_value(raw, key)
+        unit = "frame" if key == "end_frame" else "sec"
+        if kind == "rel":
+            if unit == "frame":
+                val = _get_frame_count(src) - val
+            else:
+                val = _get_duration(src) - val
+        end_val = val
+        end_unit = unit
+
+    dur_unit = dur_val = None
+    if dur_pick:
+        key, raw = dur_pick
+        dur_val = _parse_plain_number(raw, key)
+        dur_unit = "frame" if key == "duration_frames" else "sec"
+
+    if use_frames:
+        fps = _get_fps(src)
+        start0 = 0
+        if start_unit == "frame":
+            start0 = int(round(start_val)) - 1
+        elif start_unit == "sec":
+            start0 = int(round(start_val * fps))
+        start0 = max(0, start0)
+
+        end0 = None
+        if end_unit == "frame":
+            end0 = int(round(end_val)) - 1
+        elif end_unit == "sec":
+            end0 = int(round(end_val * fps)) - 1
+        elif dur_unit == "frame":
+            end0 = start0 + int(round(dur_val)) - 1
+        elif dur_unit == "sec":
+            end0 = start0 + int(round(dur_val * fps)) - 1
+
+        start_sec = start0 / fps
+        duration_sec = (end0 - start0 + 1) / fps if end0 is not None else None
+        return TrimSpec(start_sec=start_sec, duration_sec=duration_sec, start0=start0, end0=end0)
+
+    start_sec = start_val if start_unit == "sec" else 0.0
+    if end_unit == "sec":
+        duration_sec = max(0.0, end_val - start_sec)
+    elif dur_unit == "sec":
+        duration_sec = dur_val
+    else:
+        duration_sec = None
+    return TrimSpec(start_sec=start_sec, duration_sec=duration_sec)
+
+
+def build_cmd(src, dst, args, vf, trim: TrimSpec, *, force_overwrite=False):
+    """vf is the enhancement-only filter chain (from build_vf); trim is the resolved
+    TrimSpec. Frame-exact trims are folded into the -vf chain via a select+setpts
+    filter; time-based trims use -ss/-t placed after -i (output/accurate seeking,
+    so neither mechanism is tied to keyframes)."""
     cmd = ["ffmpeg"]
     if args.overwrite or force_overwrite:
         cmd.append("-y")
@@ -150,9 +422,15 @@ def build_cmd(src, dst, args, max_intensity, contrast, gamma, *, force_overwrite
         cmd += ["-r", str(args.fps)]
     cmd += ["-i", str(src)]
 
-    vf = build_vf(max_intensity, contrast, gamma, lutrgb_cubic=args.lutrgb_cubic)
-    if vf:
-        cmd += ["-vf", vf]
+    if not trim.frame_exact:
+        if trim.start_sec:
+            cmd += ["-ss", f"{trim.start_sec:.6f}"]
+        if trim.duration_sec is not None:
+            cmd += ["-t", f"{trim.duration_sec:.6f}"]
+
+    full_vf = ",".join(f for f in (trim.filter_str(), vf) if f)
+    if full_vf:
+        cmd += ["-vf", full_vf]
     if args.test_frames:
         cmd += ["-vframes", str(int(args.test_frames))]
     cmd += [
@@ -184,6 +462,21 @@ def _tiff_count_type(val: str):
         )
 
 
+def _get_fps(src: Path) -> float:
+    """Return the source's frame rate via ffprobe (r_frame_rate)."""
+    r = subprocess.run(
+        ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+         '-show_entries', 'stream=r_frame_rate',
+         '-of', 'default=noprint_wrappers=1:nokey=1', str(src)],
+        capture_output=True, text=True,
+    )
+    fps_str = r.stdout.strip()
+    if not fps_str:
+        raise RuntimeError(f"Cannot determine frame rate for {src}")
+    num, _, den = fps_str.partition('/')
+    return int(num) / (int(den) if den else 1)
+
+
 def _get_frame_count(src: Path) -> int:
     """Return total video frame count via ffprobe."""
     r = subprocess.run(
@@ -196,25 +489,12 @@ def _get_frame_count(src: Path) -> int:
     if r.returncode == 0 and val and val != 'N/A':
         return int(val)
     # Fallback: duration × frame_rate
-    r_fps = subprocess.run(
-        ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
-         '-show_entries', 'stream=r_frame_rate',
-         '-of', 'default=noprint_wrappers=1:nokey=1', str(src)],
-        capture_output=True, text=True,
-    )
-    r_dur = subprocess.run(
-        ['ffprobe', '-v', 'error',
-         '-show_entries', 'format=duration',
-         '-of', 'default=noprint_wrappers=1:nokey=1', str(src)],
-        capture_output=True, text=True,
-    )
-    fps_str = r_fps.stdout.strip()
-    dur_str = r_dur.stdout.strip()
-    if fps_str and dur_str:
-        num, _, den = fps_str.partition('/')
-        fps = int(num) / (int(den) if den else 1)
-        return round(float(dur_str) * fps)
-    raise RuntimeError(f"Cannot determine frame count for {src}")
+    try:
+        fps = _get_fps(src)
+        duration = _get_duration(src)
+    except RuntimeError:
+        raise RuntimeError(f"Cannot determine frame count for {src}")
+    return round(duration * fps)
 
 
 def extract_tiffs(src: Path, out_dir: Path, args) -> bool:
@@ -308,8 +588,33 @@ def main():
                         help="Per-file enhancement rule (repeatable). Pattern matches relative "
                              "path with wildcards. E.g.: --rule '*dark*:max_intensity=0.3,gamma=0.8'")
     parser.add_argument("--config", type=Path, default=None,
-                        help="YAML config file with a 'rules:' list of {pattern, max_intensity, "
-                             "contrast, gamma} entries. CLI --rule flags take priority.")
+                        help="YAML or CSV config file (dispatched on extension) with per-file "
+                             "enhancement/trim overrides. YAML: a 'rules:' list of {pattern, "
+                             "max_intensity, contrast, gamma, start_frame, end_frame, "
+                             "duration_frames, start_sec, end_sec, duration_sec}. CSV: one row "
+                             "per file/pattern with a 'pattern' or 'filename' column plus any "
+                             "of the same fields as columns; missing columns fall back to CLI "
+                             "defaults. CLI --rule flags take priority over --config.")
+
+    parser.add_argument("--start-frame", default=None, metavar="N",
+                        help="Default trim start, as a 1-indexed frame number")
+    parser.add_argument("--end-frame", default=None, metavar="N",
+                        help="Default trim end (inclusive), as a 1-indexed frame number, "
+                             "'end' (last frame), or 'end - N' (N frames before the last). "
+                             "Mutually exclusive with --duration-frames/--duration-sec")
+    parser.add_argument("--duration-frames", default=None, metavar="N",
+                        help="Default trim duration in frames. "
+                             "Mutually exclusive with --end-frame/--end-sec")
+    parser.add_argument("--start-sec", default=None, metavar="T",
+                        help="Default trim start, in seconds from the start of the file")
+    parser.add_argument("--end-sec", default=None, metavar="T",
+                        help="Default trim end, in seconds, 'end' (last timestamp), or "
+                             "'end - T' (T seconds before the last). "
+                             "Mutually exclusive with --duration-frames/--duration-sec")
+    parser.add_argument("--duration-sec", default=None, metavar="T",
+                        help="Default trim duration in seconds. "
+                             "Mutually exclusive with --end-frame/--end-sec")
+
     parser.add_argument("--test-count", type=int, default=None,
                         help="Number of files to process in test mode")
     parser.add_argument("--test-files", nargs="+", type=Path, default=None,
@@ -494,7 +799,7 @@ def main():
     # -------------------------------------------------------------------------
     # File discovery
     # -------------------------------------------------------------------------
-    rules = load_rules(args)
+    rules = load_rules(args, parser)
 
     test_mode = False
     if args.test_files:
@@ -536,6 +841,9 @@ def main():
     seen_src_dirs: set[Path] = set()
 
     force_overwrite_map: dict[Path, bool] = {}
+    # Cache TrimSpecs resolved here so the main loop doesn't re-probe (via ffprobe,
+    # for 'end - x' rules) the same file a second time.
+    trim_map: dict[Path, TrimSpec] = {}
     if log is not None:
         for src in files:
             dst_pre = output_path(src, args.source_dir, args.output_dir, args.suffix)
@@ -543,8 +851,11 @@ def main():
                        if src.is_relative_to(args.source_dir) else Path(src.name))
             mi, co, ga = resolve_enhancement(rel_pre, rules, args)
             vf_pre = build_vf(mi, co, ga)
+            trim_pre = resolve_trim(rel_pre, rules, args, src)
+            trim_map[src] = trim_pre
             _, force_ow, reason = log.add_or_reconcile(
-                src, dst_pre, args.crf, args.preset, args.fps, vf_pre, args.overwrite
+                src, dst_pre, args.crf, args.preset, args.fps, vf_pre, trim_pre.canonical(),
+                args.overwrite
             )
             if reason:
                 print(f"  {src.name}: re-queued ({reason})")
@@ -561,10 +872,13 @@ def main():
         rel = src.relative_to(args.source_dir) if src.is_relative_to(args.source_dir) else Path(src.name)
         max_intensity, contrast, gamma = resolve_enhancement(rel, rules, args)
         vf = build_vf(max_intensity, contrast, gamma)
+        trim = trim_map.get(src) or resolve_trim(rel, rules, args, src)
 
         print(f"[{i}/{len(files)}] {src} → {dst}")
         if rules and args.verbose:
             print(f"  enhancement: max_intensity={max_intensity} contrast={contrast} gamma={gamma}")
+        if trim.canonical() and args.verbose:
+            print(f"  trim: {trim.canonical()}")
 
         if args.check_dir is not None:
             try:
@@ -605,8 +919,7 @@ def main():
             conversion_ok = True
         else:
             logger.info(f"Converting {src} → {dst}")
-            cmd = build_cmd(src, dst, args, max_intensity, contrast, gamma,
-                            force_overwrite=force_ow)
+            cmd = build_cmd(src, dst, args, vf, trim, force_overwrite=force_ow)
             if args.dry_run:
                 print(" ", " ".join(cmd))
                 continue
@@ -645,7 +958,8 @@ def main():
         if run_psnr and status not in ('psnr_passed', 'psnr_failed'):
             logger.info(f"Verifying PSNR for {src}")
             r = verify_psnr(src, dst, vf, n_frames=args.psnr_frames,
-                            threshold=args.psnr_threshold, verbose=args.verbose)
+                            threshold=args.psnr_threshold, start_sec=trim.start_sec,
+                            verbose=args.verbose)
             print_psnr_result(r)
             if not r.passed:
                 psnr_failed += 1
@@ -659,7 +973,8 @@ def main():
             logger.info(f"Detailed check for {src}")
             r = check_file(src, dst, vf, n_frames=args.check_frames,
                            threshold=args.psnr_threshold,
-                           check_dir=check_dir, verbose=args.verbose)
+                           check_dir=check_dir, start_sec=trim.start_sec,
+                           verbose=args.verbose)
             print_check_result(r)
             if not r.passed:
                 check_failed += 1

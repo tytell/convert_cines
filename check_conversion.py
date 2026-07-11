@@ -49,10 +49,10 @@ def _get_duration(path: Path) -> float:
     return float(result.stdout.strip())
 
 
-def _timestamps(duration: float, n_frames: int) -> list[float]:
-    # skip the first few timestamps since they can be affected by keyframe seeking and may 
+def _timestamps(duration: float, n_frames: int, offset: float = 0.0) -> list[float]:
+    # skip the first few timestamps since they can be affected by keyframe seeking and may
     # not be representative of overall quality; sample evenly across the rest of the duration
-    return [(i + 0.5) * duration / (n_frames + 3) for i in range(n_frames + 3)][3:]
+    return [offset + (i + 0.5) * duration / (n_frames + 3) for i in range(n_frames + 3)][3:]
 
 
 def _parse_psnr_y(stderr: str) -> float:
@@ -70,10 +70,14 @@ def verify_psnr(
     *,
     n_frames: int = DEFAULT_PSNR_FRAMES,
     threshold: float = DEFAULT_PSNR_THRESHOLD,
+    start_sec: float = 0.0,
     verbose: bool = False,
 ) -> CheckResult:
     """Inline PSNR check. Extracts frames to a temp dir (reusing _extract_gray_png so that
-    slow seek is used for both inputs) then compares with ffmpeg psnr."""
+    slow seek is used for both inputs) then compares with ffmpeg psnr.
+
+    start_sec is the offset into src where dst's content begins (0.0 unless dst was
+    trimmed from src), so source sampling stays aligned with the trimmed output."""
     if not src.exists():
         return CheckResult(src=src, dst=dst, frames=[], passed=False,
                            threshold=threshold, error=f"Source not found: {src}")
@@ -82,13 +86,13 @@ def verify_psnr(
                            threshold=threshold, error=f"Output not found: {dst}")
 
     try:
-        src_duration = _get_duration(src)
+        _get_duration(src)  # existence/readability check
         dst_duration = _get_duration(dst)
     except RuntimeError as e:
         return CheckResult(src=src, dst=dst, frames=[], passed=False,
                            threshold=threshold, error=str(e))
 
-    src_times = _timestamps(src_duration, n_frames)
+    src_times = _timestamps(dst_duration, n_frames, offset=start_sec)
     dst_times = _timestamps(dst_duration, n_frames)
     frames = []
 
@@ -165,9 +169,13 @@ def check_file(
     n_frames: int = DEFAULT_PSNR_FRAMES,
     threshold: float = DEFAULT_PSNR_THRESHOLD,
     check_dir: Path | None = None,
+    start_sec: float = 0.0,
     verbose: bool = False,
 ) -> CheckResult:
-    """Thorough check: extract R-channel grayscale PNGs from both files, compare with PSNR."""
+    """Thorough check: extract R-channel grayscale PNGs from both files, compare with PSNR.
+
+    start_sec is the offset into src where dst's content begins (0.0 unless dst was
+    trimmed from src), so source sampling stays aligned with the trimmed output."""
     if not src.exists():
         return CheckResult(src=src, dst=dst, frames=[], passed=False,
                            threshold=threshold, error=f"Source not found: {src}")
@@ -176,13 +184,13 @@ def check_file(
                            threshold=threshold, error=f"Output not found: {dst}")
 
     try:
-        src_duration = _get_duration(src)
+        _get_duration(src)  # existence/readability check
         dst_duration = _get_duration(dst)
     except RuntimeError as e:
         return CheckResult(src=src, dst=dst, frames=[], passed=False,
                            threshold=threshold, error=str(e))
 
-    src_times = _timestamps(src_duration, n_frames)
+    src_times = _timestamps(dst_duration, n_frames, offset=start_sec)
     dst_times = _timestamps(dst_duration, n_frames)
     frames = []
 

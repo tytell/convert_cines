@@ -39,7 +39,7 @@ from typing import Any
 
 FIELDNAMES = [
     'source', 'output', 'status',
-    'crf', 'preset', 'fps', 'vf',
+    'crf', 'preset', 'fps', 'vf', 'trim',
     'psnr_avg', 'psnr_min', 'check_avg', 'check_min',
     'updated', 'error',
 ]
@@ -50,6 +50,8 @@ PARAM_KEYS = [
     'source_dir', 'output_dir', 'ext', 'suffix',
     'crf', 'preset', 'fps',
     'max_intensity', 'contrast', 'gamma',
+    'start_frame', 'start_sec', 'end_frame', 'end_sec',
+    'duration_frames', 'duration_sec',
     'psnr_frames', 'psnr_threshold',
     'check_frames',
     'config',
@@ -104,6 +106,7 @@ class FileRecord:
     preset: str = ''
     fps: str = ''
     vf: str = ''
+    trim: str = ''
     psnr_avg: str = ''
     psnr_min: str = ''
     check_avg: str = ''
@@ -111,12 +114,13 @@ class FileRecord:
     updated: str = ''
     error: str = ''
 
-    def options_match(self, crf: int, preset: str, fps, vf: str | None) -> bool:
+    def options_match(self, crf: int, preset: str, fps, vf: str | None, trim: str | None) -> bool:
         return (
             self.crf == str(crf)
             and self.preset == preset
             and self.fps == (str(fps) if fps is not None else '')
             and self.vf == (vf or '')
+            and self.trim == (trim or '')
         )
 
 
@@ -246,6 +250,12 @@ class ProgressLog(_BaseProgressLog):
             'max_intensity': str(args.max_intensity),
             'contrast': str(args.contrast),
             'gamma': str(args.gamma),
+            'start_frame': args.start_frame or '',
+            'start_sec': args.start_sec or '',
+            'end_frame': args.end_frame or '',
+            'end_sec': args.end_sec or '',
+            'duration_frames': args.duration_frames or '',
+            'duration_sec': args.duration_sec or '',
             'psnr_frames': str(args.psnr_frames),
             'psnr_threshold': str(args.psnr_threshold),
             'check_frames': str(args.check_frames),
@@ -277,6 +287,10 @@ class ProgressLog(_BaseProgressLog):
             v = p.get(k, '')
             return Path(v) if v else None
 
+        def _opt_str(k: str):
+            v = p.get(k, '')
+            return v if v else None
+
         return {
             'source_dir': _path('source_dir'),
             'output_dir':  _path('output_dir'),
@@ -288,6 +302,12 @@ class ProgressLog(_BaseProgressLog):
             'max_intensity': _float('max_intensity', 1.0),
             'contrast':    _float('contrast', 1.0),
             'gamma':       _float('gamma', 1.0),
+            'start_frame': _opt_str('start_frame'),
+            'start_sec':   _opt_str('start_sec'),
+            'end_frame':   _opt_str('end_frame'),
+            'end_sec':     _opt_str('end_sec'),
+            'duration_frames': _opt_str('duration_frames'),
+            'duration_sec':    _opt_str('duration_sec'),
             'psnr_frames': _int('psnr_frames', 5),
             'psnr_threshold': _float('psnr_threshold', 30.0),
             'check_frames': _int('check_frames', 5),
@@ -310,6 +330,7 @@ class ProgressLog(_BaseProgressLog):
         preset: str,
         fps,
         vf: str | None,
+        trim: str | None,
         overwrite: bool,
     ) -> tuple[str, bool, str | None]:
         """Register a file or reconcile with an existing record.
@@ -325,10 +346,11 @@ class ProgressLog(_BaseProgressLog):
         crf_s = str(crf)
         fps_s = str(fps) if fps is not None else ''
         vf_s = vf or ''
+        trim_s = trim or ''
 
         if key in self._records:
             rec = self._records[key]
-            if not rec.options_match(crf, preset, fps, vf):
+            if not rec.options_match(crf, preset, fps, vf, trim):
                 parts = []
                 if rec.crf != crf_s:
                     parts.append(f'crf {rec.crf}→{crf_s}')
@@ -338,12 +360,15 @@ class ProgressLog(_BaseProgressLog):
                     parts.append(f'fps {rec.fps or "auto"}→{fps_s or "auto"}')
                 if rec.vf != vf_s:
                     parts.append('vf changed')
+                if rec.trim != trim_s:
+                    parts.append('trim changed')
                 reason = ', '.join(parts)
                 rec.status = 'queued'
                 rec.crf = crf_s
                 rec.preset = preset
                 rec.fps = fps_s
                 rec.vf = vf_s
+                rec.trim = trim_s
                 rec.psnr_avg = rec.psnr_min = ''
                 rec.check_avg = rec.check_min = ''
                 rec.error = ''
@@ -364,6 +389,7 @@ class ProgressLog(_BaseProgressLog):
             preset=preset,
             fps=fps_s,
             vf=vf_s,
+            trim=trim_s,
             updated=_now(),
         )
         self._records[key] = rec
