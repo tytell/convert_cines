@@ -98,6 +98,9 @@ Flags are grouped below by the feature area they belong to, matching the section
 
 #### Test mode
 
+Run only on a small number of files or a small number of frames to test the conversion.
+Also runs quality checks by default.
+
 | Flag | Default | Description |
 |---|---|---|
 | `--test-count N` | _(none)_ | Process N files spread evenly across the full set |
@@ -134,9 +137,12 @@ Flags are grouped below by the feature area they belong to, matching the section
 
 #### Quality checks
 
+Automated quality checks for conversion. Most useful for grayscale CINE to MP4 conversion. Less useful for color videos.
+
 | Flag | Default | Description |
 |---|---|---|
 | `--test-psnr` | off | Run inline Y-channel PSNR check after each conversion (auto-enabled in test mode) |
+| `--no-test-psnr` | off | Do not run inline Y-channel PSNR check after each conversion (to keep it from running the tests in test mode) |
 | `--psnr-frames N` | `5` | Frames sampled for the inline PSNR check |
 | `--psnr-threshold T` | `30.0` | Minimum PSNR in dB for the inline check to pass; also used as the threshold for `--check` |
 | `--check` | off | Run a thorough R-channel PSNR check (extracts grayscale PNGs from source & output); also runs for already-converted files |
@@ -152,6 +158,8 @@ Flags are grouped below by the feature area they belong to, matching the section
 | `--remove-script PATH` | `remove_cines.sh`/`.bat` next to `source_dir`'s parent | Base path for the generated removal scripts |
 
 #### TIFF frame extraction
+
+Mainly used for PIV data, to extract pairs of frames that can be used for PIV analysis.
 
 | Flag | Default | Description |
 |---|---|---|
