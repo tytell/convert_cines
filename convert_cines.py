@@ -584,33 +584,53 @@ def main():
     parser = argparse.ArgumentParser(
         description="Recursively convert video files to H.265 MP4 using ffmpeg."
     )
-    parser.add_argument("source_dir", type=Path, nargs="?", default=None,
+    general = parser.add_argument_group("General")
+    general.add_argument("source_dir", type=Path, nargs="?", default=None,
                         help="Root directory to search (may be omitted with --continue)")
-    parser.add_argument("--ext", default=".cine", help="File extension to find (default: .cine)")
-    parser.add_argument("--output-dir", type=Path, default=None,
+    general.add_argument("--ext", default=".cine", help="File extension to find (default: .cine)")
+    general.add_argument("--output-dir", type=Path, default=None,
                         help="Output root directory (mirrors source structure). "
                              "If omitted, MP4s are written next to source files.")
-    parser.add_argument("--overwrite", action="store_true", default=False,
-                        help="Overwrite existing output files")
-    parser.add_argument("--suffix", default="",
+    general.add_argument("--suffix", default="",
                         help="Suffix to add to output filenames before extension (default: '')")
-    parser.add_argument("--crf", type=int, default=28, help="H.265 CRF value (default: 28)")
-    parser.add_argument("--preset", default="slow", help="x265 preset (default: slow)")
-    parser.add_argument("--fps", type=float, default=None, help="Output frame rate")
-    parser.add_argument("--max-intensity", type=float, default=1.0,
+    general.add_argument("--overwrite", action="store_true", default=False,
+                        help="Overwrite existing output files")
+    general.add_argument("-v", "--verbose", action="store_true",
+                        help="Print detailed processing info")
+
+    enhancement = parser.add_argument_group("Image enhancement")
+    enhancement.add_argument("--max-intensity", type=float, default=1.0,
                         help="Default maximum output intensity via curves filter, 0.0–1.0 "
                              "(lower = brighter output; default: 1.0 = no adjustment)")
-    parser.add_argument("--contrast", type=float, default=1.0,
+    enhancement.add_argument("--contrast", type=float, default=1.0,
                         help="Default contrast via eq filter (default: 1.0 = no adjustment)")
-    parser.add_argument("--gamma", type=float, default=1.0,
+    enhancement.add_argument("--gamma", type=float, default=1.0,
                         help="Default gamma via eq filter (default: 1.0 = no adjustment)")
-    parser.add_argument("--lutrgb-cubic", action="store_true",
+    enhancement.add_argument("--lutrgb-cubic", action="store_true",
                         help="Use cubic interpolation for LUTRGB filter (default: False)")
-     
-    parser.add_argument("--rule", action="append", metavar="PATTERN:param=value,...",
+
+    encoding = parser.add_argument_group("Encoding options")
+    encoding.add_argument("--crf", type=int, default=28, help="H.265 CRF value (default: 28)")
+    encoding.add_argument("--preset", default="slow", help="x265 preset (default: slow)")
+    encoding.add_argument("--fps", type=float, default=None, help="Output frame rate")
+
+    test_mode = parser.add_argument_group("Test mode")
+    test_mode.add_argument("--test-count", type=int, default=None,
+                        help="Number of files to process in test mode")
+    test_mode.add_argument("--test-files", nargs="+", type=Path, default=None,
+                        help="Specific files to process in test mode (overrides --test-count)")
+    test_mode.add_argument("--test-frames", type=float, default=None,
+                        help="Number of frames to encode per file in test mode")
+
+    dry_run = parser.add_argument_group("Dry run")
+    dry_run.add_argument("-n", "--dry-run", action="store_true",
+                        help="Print ffmpeg commands without running them")
+
+    rules = parser.add_argument_group("File matching enhancement rules and trimming")
+    rules.add_argument("--rule", action="append", metavar="PATTERN:param=value,...",
                         help="Per-file enhancement rule (repeatable). Pattern matches relative "
                              "path with wildcards. E.g.: --rule '*dark*:max_intensity=0.3,gamma=0.8'")
-    parser.add_argument("--config", type=Path, default=None,
+    rules.add_argument("--config", type=Path, default=None,
                         help="YAML or CSV config file (dispatched on extension) with per-file "
                              "enhancement/trim overrides. YAML: a 'rules:' list of {pattern, "
                              "max_intensity, contrast, gamma, start_frame, end_frame, "
@@ -618,94 +638,89 @@ def main():
                              "per file/pattern with a 'pattern' or 'filename' column plus any "
                              "of the same fields as columns; missing columns fall back to CLI "
                              "defaults. CLI --rule flags take priority over --config.")
-
-    parser.add_argument("--start-frame", default=None, metavar="N",
+    rules.add_argument("--start-frame", default=None, metavar="N",
                         help="Default trim start, as a 1-indexed frame number")
-    parser.add_argument("--end-frame", default=None, metavar="N",
+    rules.add_argument("--end-frame", default=None, metavar="N",
                         help="Default trim end (inclusive), as a 1-indexed frame number, "
                              "'end' (last frame), or 'end - N' (N frames before the last). "
                              "Mutually exclusive with --duration-frames/--duration-sec")
-    parser.add_argument("--duration-frames", default=None, metavar="N",
+    rules.add_argument("--duration-frames", default=None, metavar="N",
                         help="Default trim duration in frames. "
                              "Mutually exclusive with --end-frame/--end-sec")
-    parser.add_argument("--start-sec", default=None, metavar="T",
+    rules.add_argument("--start-sec", default=None, metavar="T",
                         help="Default trim start, in seconds from the start of the file")
-    parser.add_argument("--end-sec", default=None, metavar="T",
+    rules.add_argument("--end-sec", default=None, metavar="T",
                         help="Default trim end, in seconds, 'end' (last timestamp), or "
                              "'end - T' (T seconds before the last). "
                              "Mutually exclusive with --duration-frames/--duration-sec")
-    parser.add_argument("--duration-sec", default=None, metavar="T",
+    rules.add_argument("--duration-sec", default=None, metavar="T",
                         help="Default trim duration in seconds. "
                              "Mutually exclusive with --end-frame/--end-sec")
 
-    parser.add_argument("--test-count", type=int, default=None,
-                        help="Number of files to process in test mode")
-    parser.add_argument("--test-files", nargs="+", type=Path, default=None,
-                        help="Specific files to process in test mode (overrides --test-count)")
-    parser.add_argument("--test-frames", type=float, default=None,
-                        help="Number of frames to encode per file in test mode")
-    parser.add_argument("-n", "--dry-run", action="store_true",
-                        help="Print ffmpeg commands without running them")
-    parser.add_argument("-v", "--verbose", action="store_true",
-                        help="Print detailed processing info")
-
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument("--test-psnr", action="store_true",
-                        help="Run inline PSNR check after each conversion "
-                             "(slow, and may not make sense for color videos)")
-    group.add_argument("--no-test-psnr", dest="test_psnr", action="store_false")
-    parser.set_defaults(test_psnr=None)  # None = auto, True = force, False = disable
-
-    parser.add_argument("--psnr-frames", type=int, default=DEFAULT_PSNR_FRAMES, metavar="N",
-                        help=f"Frames to sample for inline PSNR check (default: {DEFAULT_PSNR_FRAMES})")
-    parser.add_argument("--psnr-threshold", type=float, default=DEFAULT_PSNR_THRESHOLD, metavar="T",
-                        help=f"Minimum acceptable PSNR in dB for inline check (default: {DEFAULT_PSNR_THRESHOLD})")
-    parser.add_argument("--check", action="store_true",
-                        help="Run thorough R-channel PSNR check by extracting grayscale frames "
-                             "from source and output. Runs after conversion and for skipped files.")
-    parser.add_argument("--check-frames", type=int, default=DEFAULT_PSNR_FRAMES, metavar="N",
-                        help=f"Frames to sample for --check (default: {DEFAULT_PSNR_FRAMES})")
-    parser.add_argument("--check-dir", type=Path, default=None, metavar="DIR",
-                        help="Save extracted grayscale PNGs under DIR, "
-                             "mirroring the source directory structure")
-    parser.add_argument("--keep-frames", action="store_true",
-                        help="Save extracted check frames alongside the converted MP4 "
-                             "(ignored if --check-dir is set)")
-    parser.add_argument("--tiff-dir", type=Path, default=None, metavar="DIR",
-                        help="Output root for extracted TIFFs (enables TIFF extraction). "
-                             "Mirrors source directory structure. Always writes raw 16-bit "
-                             "grayscale with no enhancement filters applied.")
-    parser.add_argument("--tiff-count", type=_tiff_count_type, default=None, metavar="N",
-                        help="Frames to extract per file: integer for N evenly-distributed "
-                             "frames, 'all' for every frame (default when --tiff-dir is set). "
-                             "Mutually exclusive with --tiff-every.")
-    parser.add_argument("--tiff-every", type=int, default=None, metavar="M",
-                        help="Extract one frame (or one pair) every M source frames. "
-                             "Mutually exclusive with --tiff-count.")
-    parser.add_argument("--tiff-pair-sep", type=int, default=None, metavar="N",
-                        help="Also extract a frame N source frames after each anchor, "
-                             "producing consecutive pairs in the output. "
-                             "Requires --tiff-every or --tiff-count N (not 'all').")
-    parser.add_argument("--remove-cine", action="store_true",
-                        help="After --check, write a shell script listing all CINE files that "
-                             "passed, so you can review and run it to delete them.")
-    parser.add_argument("--remove-script", type=Path, default=None, metavar="PATH",
-                        help="Path for the generated removal script (default: remove_cines.sh "
-                             "next to the source directory). A .bat file is also written for Windows.")
-    parser.add_argument("--progress-file", type=Path, default=None, metavar="PATH",
+    progress = parser.add_argument_group("Progress tracking and resuming")
+    progress.add_argument("--progress-file", type=Path, default=None, metavar="PATH",
                         help="Path for the progress CSV (default: conversion_progress.csv inside "
                              "source_dir). Created automatically; tracks status of every file so "
                              "a run can be resumed after interruption.")
-    parser.add_argument("--no-progress", action="store_true",
+    progress.add_argument("--no-progress", action="store_true",
                         help="Disable progress tracking entirely (no CSV file).")
-    parser.add_argument("--continue", dest="continue_run", action="store_true",
+    progress.add_argument("--continue", dest="continue_run", action="store_true",
                         help="Resume a previous run using all parameters stored in the progress "
                              "file. source_dir may be omitted; it is read from the progress file. "
                              "Run-mode flags (--check, --verbose, --remove-cine, etc.) still come "
                              "from the current command line.")
-    parser.add_argument("--restart", action="store_true",
+    progress.add_argument("--restart", action="store_true",
                         help="Clear the progress file and start fresh. Re-converts all files "
                              "regardless of prior status.")
+
+    quality = parser.add_argument_group("Quality checks")
+    psnr_group = quality.add_mutually_exclusive_group()
+    psnr_group.add_argument("--test-psnr", action="store_true",
+                        help="Run inline PSNR check after each conversion "
+                             "(slow, and may not make sense for color videos)")
+    psnr_group.add_argument("--no-test-psnr", dest="test_psnr", action="store_false")
+    parser.set_defaults(test_psnr=None)  # None = auto, True = force, False = disable
+
+    quality.add_argument("--psnr-frames", type=int, default=DEFAULT_PSNR_FRAMES, metavar="N",
+                        help=f"Frames to sample for inline PSNR check (default: {DEFAULT_PSNR_FRAMES})")
+    quality.add_argument("--psnr-threshold", type=float, default=DEFAULT_PSNR_THRESHOLD, metavar="T",
+                        help=f"Minimum acceptable PSNR in dB for inline check (default: {DEFAULT_PSNR_THRESHOLD})")
+    quality.add_argument("--check", action="store_true",
+                        help="Run thorough R-channel PSNR check by extracting grayscale frames "
+                             "from source and output. Runs after conversion and for skipped files.")
+    quality.add_argument("--check-frames", type=int, default=DEFAULT_PSNR_FRAMES, metavar="N",
+                        help=f"Frames to sample for --check (default: {DEFAULT_PSNR_FRAMES})")
+    quality.add_argument("--check-dir", type=Path, default=None, metavar="DIR",
+                        help="Save extracted grayscale PNGs under DIR, "
+                             "mirroring the source directory structure")
+    quality.add_argument("--keep-frames", action="store_true",
+                        help="Save extracted check frames alongside the converted MP4 "
+                             "(ignored if --check-dir is set)")
+
+    removing = parser.add_argument_group("Removing verified CINE files")
+    removing.add_argument("--remove-cine", action="store_true",
+                        help="After --check, write a shell script listing all CINE files that "
+                             "passed, so you can review and run it to delete them.")
+    removing.add_argument("--remove-script", type=Path, default=None, metavar="PATH",
+                        help="Path for the generated removal script (default: remove_cines.sh "
+                             "next to the source directory). A .bat file is also written for Windows.")
+
+    tiff = parser.add_argument_group("TIFF frame extraction")
+    tiff.add_argument("--tiff-dir", type=Path, default=None, metavar="DIR",
+                        help="Output root for extracted TIFFs (enables TIFF extraction). "
+                             "Mirrors source directory structure. Always writes raw 16-bit "
+                             "grayscale with no enhancement filters applied.")
+    tiff.add_argument("--tiff-count", type=_tiff_count_type, default=None, metavar="N",
+                        help="Frames to extract per file: integer for N evenly-distributed "
+                             "frames, 'all' for every frame (default when --tiff-dir is set). "
+                             "Mutually exclusive with --tiff-every.")
+    tiff.add_argument("--tiff-every", type=int, default=None, metavar="M",
+                        help="Extract one frame (or one pair) every M source frames. "
+                             "Mutually exclusive with --tiff-count.")
+    tiff.add_argument("--tiff-pair-sep", type=int, default=None, metavar="N",
+                        help="Also extract a frame N source frames after each anchor, "
+                             "producing consecutive pairs in the output. "
+                             "Requires --tiff-every or --tiff-count N (not 'all').")
 
     args = parser.parse_args()
 

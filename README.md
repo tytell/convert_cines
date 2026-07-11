@@ -86,6 +86,7 @@ Flags are grouped below by the feature area they belong to, matching the section
 | `--max-intensity FLOAT` | `1.0` | Brightness via `curves` filter, 0.0–1.0 (lower = brighter) |
 | `--contrast FLOAT` | `1.0` | Contrast via `eq` filter |
 | `--gamma FLOAT` | `1.0` | Gamma via `eq` filter |
+| `--lutrgb-cubic` | off | Use cubic interpolation for the LUTRGB filter |
 
 #### Encoding options
 
