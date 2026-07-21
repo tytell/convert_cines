@@ -199,7 +199,7 @@ def _load_csv_rules(path: Path) -> list[tuple[str, dict]]:
     combination of enhancement/trim columns. Missing columns simply aren't
     included in the per-row overrides dict, so they fall back to CLI defaults."""
     rules = []
-    with open(path, newline="") as f:
+    with open(path, newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         for row in reader:
             row = dict(row)
