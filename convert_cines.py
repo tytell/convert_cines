@@ -900,7 +900,7 @@ def main():
             rel_pre = (src.relative_to(args.source_dir)
                        if src.is_relative_to(args.source_dir) else Path(src.name))
             mi, co, ga = resolve_enhancement(rel_pre, rules, args)
-            vf_pre = build_vf(mi, co, ga)
+            vf_pre = build_vf(mi, co, ga, args.lutrgb_cubic)
             _, force_ow, reason = log.add_or_reconcile(
                 src, dst_pre, args.crf, args.preset, args.fps, vf_pre, trim_map[src].canonical(),
                 args.overwrite
@@ -919,7 +919,7 @@ def main():
         dst = output_path(src, args.source_dir, args.output_dir, args.suffix)
         rel = src.relative_to(args.source_dir) if src.is_relative_to(args.source_dir) else Path(src.name)
         max_intensity, contrast, gamma = resolve_enhancement(rel, rules, args)
-        vf = build_vf(max_intensity, contrast, gamma)
+        vf = build_vf(max_intensity, contrast, gamma, args.lutrgb_cubic)
         trim = trim_map[src]
 
         print(f"[{i}/{len(files)}] {src} → {dst}")
