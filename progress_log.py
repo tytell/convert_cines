@@ -39,7 +39,7 @@ from typing import Any
 
 FIELDNAMES = [
     'source', 'output', 'status',
-    'crf', 'preset', 'fps', 'vf', 'trim',
+    'crf', 'preset', 'fps', 'vf', 'trim', 'video_only',
     'psnr_avg', 'psnr_min', 'check_avg', 'check_min',
     'updated', 'error',
 ]
@@ -48,7 +48,7 @@ FIELDNAMES = [
 # 'rule' and 'config' are handled separately (rule is multi-valued).
 PARAM_KEYS = [
     'source_dir', 'output_dir', 'ext', 'suffix',
-    'crf', 'preset', 'fps',
+    'crf', 'preset', 'fps', 'video_only',
     'max_intensity', 'contrast', 'gamma',
     'start_frame', 'start_sec', 'end_frame', 'end_sec',
     'duration_frames', 'duration_sec',
@@ -107,6 +107,7 @@ class FileRecord:
     fps: str = ''
     vf: str = ''
     trim: str = ''
+    video_only: str = ''
     psnr_avg: str = ''
     psnr_min: str = ''
     check_avg: str = ''
@@ -114,13 +115,17 @@ class FileRecord:
     updated: str = ''
     error: str = ''
 
-    def options_match(self, crf: int, preset: str, fps, vf: str | None, trim: str | None) -> bool:
+    def options_match(
+        self, crf: int, preset: str, fps, vf: str | None, trim: str | None,
+        video_only: bool,
+    ) -> bool:
         return (
             self.crf == str(crf)
             and self.preset == preset
             and self.fps == (str(fps) if fps is not None else '')
             and self.vf == (vf or '')
             and self.trim == (trim or '')
+            and self.video_only == ('true' if video_only else '')
         )
 
 
@@ -247,6 +252,7 @@ class ProgressLog(_BaseProgressLog):
             'crf': str(args.crf),
             'preset': args.preset,
             'fps': str(args.fps) if args.fps is not None else '',
+            'video_only': 'true' if args.video_only else '',
             'max_intensity': str(args.max_intensity),
             'contrast': str(args.contrast),
             'gamma': str(args.gamma),
@@ -291,6 +297,10 @@ class ProgressLog(_BaseProgressLog):
             v = p.get(k, '')
             return v if v else None
 
+        def _bool(k: str, default: bool = False) -> bool:
+            v = p.get(k, '')
+            return v.lower() in ('1', 'true', 'yes', 'on') if v else default
+
         return {
             'source_dir': _path('source_dir'),
             'output_dir':  _path('output_dir'),
@@ -299,6 +309,7 @@ class ProgressLog(_BaseProgressLog):
             'crf':         _int('crf', 28),
             'preset':      _str('preset', 'slow'),
             'fps':         _float('fps', None) if p.get('fps') else None,
+            'video_only':  _bool('video_only'),
             'max_intensity': _float('max_intensity', 1.0),
             'contrast':    _float('contrast', 1.0),
             'gamma':       _float('gamma', 1.0),
@@ -331,6 +342,7 @@ class ProgressLog(_BaseProgressLog):
         fps,
         vf: str | None,
         trim: str | None,
+        video_only: bool,
         overwrite: bool,
     ) -> tuple[str, bool, str | None]:
         """Register a file or reconcile with an existing record.
@@ -347,10 +359,11 @@ class ProgressLog(_BaseProgressLog):
         fps_s = str(fps) if fps is not None else ''
         vf_s = vf or ''
         trim_s = trim or ''
+        video_only_s = 'true' if video_only else ''
 
         if key in self._records:
             rec = self._records[key]
-            if not rec.options_match(crf, preset, fps, vf, trim):
+            if not rec.options_match(crf, preset, fps, vf, trim, video_only):
                 parts = []
                 if rec.crf != crf_s:
                     parts.append(f'crf {rec.crf}→{crf_s}')
@@ -362,6 +375,8 @@ class ProgressLog(_BaseProgressLog):
                     parts.append('vf changed')
                 if rec.trim != trim_s:
                     parts.append('trim changed')
+                if rec.video_only != video_only_s:
+                    parts.append('video-only changed')
                 reason = ', '.join(parts)
                 rec.status = 'queued'
                 rec.crf = crf_s
@@ -369,6 +384,7 @@ class ProgressLog(_BaseProgressLog):
                 rec.fps = fps_s
                 rec.vf = vf_s
                 rec.trim = trim_s
+                rec.video_only = video_only_s
                 rec.psnr_avg = rec.psnr_min = ''
                 rec.check_avg = rec.check_min = ''
                 rec.error = ''
@@ -390,6 +406,7 @@ class ProgressLog(_BaseProgressLog):
             fps=fps_s,
             vf=vf_s,
             trim=trim_s,
+            video_only=video_only_s,
             updated=_now(),
         )
         self._records[key] = rec

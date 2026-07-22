@@ -445,6 +445,9 @@ def build_cmd(src, dst, args, vf, trim: TrimSpec, *, force_overwrite=False):
         cmd += ["-r", str(args.fps)]
     cmd += ["-i", str(src)]
 
+    if args.video_only:
+        cmd += ["-map", "0:v:0", "-an", "-sn", "-dn"]
+
     if not trim.frame_exact:
         if trim.start_sec:
             cmd += ["-ss", f"{trim.start_sec:.6f}"]
@@ -613,6 +616,9 @@ def main():
     encoding.add_argument("--crf", type=int, default=28, help="H.265 CRF value (default: 28)")
     encoding.add_argument("--preset", default="slow", help="x265 preset (default: slow)")
     encoding.add_argument("--fps", type=float, default=None, help="Output frame rate")
+    encoding.add_argument("--video-only", action="store_true",
+                        help="Output only the first video stream; omit audio, subtitles, "
+                             "and data streams (default: preserve FFmpeg's normal stream selection)")
 
     test_mode = parser.add_argument_group("Test mode")
     test_mode.add_argument("--test-count", type=int, default=None,
@@ -902,8 +908,8 @@ def main():
             mi, co, ga = resolve_enhancement(rel_pre, rules, args)
             vf_pre = build_vf(mi, co, ga, args.lutrgb_cubic)
             _, force_ow, reason = log.add_or_reconcile(
-                src, dst_pre, args.crf, args.preset, args.fps, vf_pre, trim_map[src].canonical(),
-                args.overwrite
+                src, dst_pre, args.crf, args.preset, args.fps, vf_pre,
+                trim_map[src].canonical(), args.video_only, args.overwrite
             )
             if reason:
                 print(f"  {src.name}: re-queued ({reason})")

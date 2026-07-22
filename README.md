@@ -95,6 +95,7 @@ Flags are grouped below by the feature area they belong to, matching the section
 | `--crf N` | `28` | H.265 quality (0–51; lower = better quality, larger file) |
 | `--preset NAME` | `slow` | x265 encoding speed preset (`ultrafast` … `veryslow`) |
 | `--fps FLOAT` | _(source rate)_ | Output frame rate |
+| `--video-only` | off | Output only the first video stream; omit audio, subtitles, and data streams |
 
 #### Test mode
 
@@ -214,6 +215,9 @@ uv run convert_cines.py . --crf 22 --preset slow
 
 # Set output frame rate (e.g. convert 1000fps high-speed footage to 30fps playback)
 uv run convert_cines.py . --fps 30
+
+# Keep only the primary video stream (useful when auxiliary streams outlast a trimmed video)
+uv run convert_cines.py . --video-only
 ```
 
 | Flag | Default | Description |
@@ -221,6 +225,7 @@ uv run convert_cines.py . --fps 30
 | `--crf N` | `28` | H.265 quality (0–51; lower = better quality, larger file) |
 | `--preset NAME` | `slow` | x265 encoding speed preset (`ultrafast` … `veryslow`) |
 | `--fps FLOAT` | _(source rate)_ | Output frame rate |
+| `--video-only` | off | Output only the first video stream; omit audio, subtitles, and data streams |
 | `--overwrite` | off | Overwrite existing output files (default: skip if output exists) |
 
 ### Test mode
